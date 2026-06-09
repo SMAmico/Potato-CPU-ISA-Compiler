@@ -40,6 +40,7 @@
 #define OP_JLT     0xB
 #define OP_SHL     0xC
 #define OP_MULT    0xD
+#define OP_SHR     0xE
 
 // Target state
 static FILE *outputfp = NULL;
@@ -369,6 +370,105 @@ static void emit_func_call(Node *node) {
     // 4. After return, result is already in R0
 }
 
+// Convert between primitive types
+// Convert the value in R0 from operand->ty to node->ty
+static void emit_conv(Node *node) {
+    // Step 1: evaluate operand → R0
+    emit_expr(node->operand);
+
+    Type *from = node->operand->ty;
+    Type *to   = node->ty;
+
+    //
+    // 1. BOOL conversion: (value != 0)
+    //
+    if (to->kind == KIND_BOOL) {
+        char *l_true = gen_ex_isa_make_label();
+        char *l_end  = gen_ex_isa_make_label();
+
+        // if R0 != 0 → jump to true
+        emit_jnz(get_label_addr(l_true), 0);
+
+        // false: R0 = 0
+        emit_alu(OP_SUB, 0, 0, 0);
+        emit_jmp(get_label_addr(l_end));
+
+        // true: R0 = 1
+        register_label(l_true);
+        emit_literal_into_R0(1);
+
+        register_label(l_end);
+        return;
+    }
+
+
+    if (to->kind == KIND_INT || to->kind == KIND_LONG || to->kind == KIND_LLONG) {
+        // No-op: R0 already holds a 16-bit integer
+        return;
+    }
+
+    //
+    // 3. Converting to unsigned char (8-bit)
+    //
+    if (to->kind == KIND_CHAR && to->usig) {
+        // mask = 0x00FF
+        int mask_reg = get_temp_reg();
+        emit_literal_into_reg(mask_reg, 0x00FF);
+        emit_alu(OP_AND, 0, 0, mask_reg);
+        return;
+    }
+
+    //
+    // 4. Converting to signed char (8-bit)
+    //
+    if (to->kind == KIND_CHAR && !to->usig) {
+        // sign bit = 0x80
+        int sign_reg = get_temp_reg();
+        emit_literal_into_reg(sign_reg, 0x0080);
+
+        char *l_neg = gen_ex_isa_make_label();
+        char *l_end = gen_ex_isa_make_label();
+
+        // if (R0 & 0x80) != 0 → negative
+        emit_alu(OP_AND, 0, 0, sign_reg);
+        emit_jnz(get_label_addr(l_neg), 0);
+
+        // positive: mask to 8 bits
+        emit_literal_into_reg(sign_reg, 0x00FF);
+        emit_alu(OP_AND, 0, 0, sign_reg);
+        emit_jmp(get_label_addr(l_end));
+
+        // negative: OR with 0xFF00
+        register_label(l_neg);
+        emit_literal_into_reg(sign_reg, 0xFF00);
+        emit_alu(OP_OR, 0, 0, sign_reg);
+
+        register_label(l_end);
+        return;
+    }
+
+    //
+    // 5. Converting to unsigned short (16-bit)
+    //
+    if (to->kind == KIND_SHORT && to->usig) {
+        // No-op: ISA is 16-bit
+        return;
+    }
+
+    //
+    // 6. Converting to signed short (16-bit)
+    //
+    if (to->kind == KIND_SHORT && !to->usig) {
+        // No-op: ISA is 16-bit and already sign-preserving
+        return;
+    }
+
+    //
+    // 7. Default: no conversion needed
+    //
+    return;
+}
+
 // Emit binary arithmetic: result in R0
 // Pattern: left operand -> R0, right operand -> R1, ALU op -> R0 = R0 op R1
 static void emit_binop_add(Node *node) {
@@ -426,6 +526,14 @@ static void emit_binop_shl(Node *node) {
     emit_alu(OP_ADD, temp_reg, 0, 0);  // temp = R0
     emit_expr(node->right);     // shift amount in R0
     emit_alu(OP_SHL, 0, temp_reg, 0);  // R0 = temp << R0 (simplified)
+}
+
+static void emit_binop_shr(Node *node) {
+    emit_expr(node->left);      // result in R0
+    int temp_reg = get_temp_reg();
+    emit_alu(OP_ADD, temp_reg, 0, 0);  // temp = R0
+    emit_expr(node->right);     // shift amount in R0
+    emit_alu(OP_SHR, 0, temp_reg, 0);  // R0 = temp >> R0 (simplified)
 }
 
 // Comparison: set R0 to 1 if true, 0 if false
@@ -500,8 +608,7 @@ static void emit_expr(Node *node) {
         break;
     case OP_SAR:
     case OP_SHR:
-        fprintf(outputfp, "# TODO: right shift not yet implemented\n");
-        emit_alu(OP_SUB, 0, 0, 0);
+        emit_binop_shr(node);
         break;
     case '<':
         emit_binop_lt(node);
@@ -640,13 +747,59 @@ static void emit_func_epilogue(Node *func, int frame_size) {
     emit_jmp(0);                  // JMP R0_value (patched below)
 }
 
+static void push_if_stmt(Vector *stack, Node *n) {
+    if (!n) return;
+
+    switch (n->kind) {
+
+    case AST_COMPOUND_STMT:
+        for (int i = 0; i < vec_len(n->stmts); i++)
+            vec_push(stack, vec_get(n->stmts, i));
+        break;
+
+    case AST_IF:
+        vec_push(stack, n->cond);
+        vec_push(stack, n->then);
+        vec_push(stack, n->els);
+        break;
+
+    case AST_RETURN:
+        vec_push(stack, n->retval);
+        break;
+
+    case AST_TERNARY:
+        vec_push(stack, n->cond);
+        vec_push(stack, n->then);
+        vec_push(stack, n->els);
+        break;
+
+    case AST_FUNCALL:
+    case AST_FUNCPTR_CALL:
+        for (int i = 0; i < vec_len(n->args); i++)
+            vec_push(stack, vec_get(n->args, i));
+        if (n->kind == AST_FUNCPTR_CALL)
+            vec_push(stack, n->fptr);
+        break;
+
+    case AST_DEREF:
+    case AST_ADDR:
+    case AST_STRUCT_REF:
+        vec_push(stack, n->operand);
+        break;
+
+    case AST_LVAR:
+        break;
+
+    default:
+        break;
+    }
+}
+
 // Compute max positive frame size from all local variables in this function.
 // Assumes loff is a non-negative offset from FP (your R14/R15 choice).
 static int ex_isa_compute_frame_size(Node *func) {
     int maxoff = 0;
 
-    // Walk the function body and find all AST_LVAR nodes.
-    // For now, do a simple recursive walk.
     Vector *stack = make_vector();
     vec_push(stack, func->body);
 
@@ -657,22 +810,12 @@ static int ex_isa_compute_frame_size(Node *func) {
         if (n->kind == AST_LVAR) {
             if (n->loff > maxoff)
                 maxoff = n->loff;
+            continue;
         }
 
-        // Push children (very rough, but works for now)
-        if (n->left)  vec_push(stack, n->left);
-        if (n->right) vec_push(stack, n->right);
-        if (n->cond)  vec_push(stack, n->cond);
-        if (n->then)  vec_push(stack, n->then);
-        if (n->els)   vec_push(stack, n->els);
-        if (n->body)  vec_push(stack, n->body);
-        if (n->stmts) {
-            for (int i = 0; i < vec_len(n->stmts); i++)
-                vec_push(stack, vec_get(n->stmts, i));
-        }
+        push_if_stmt(stack, n);
     }
 
-    // Optionally align to word size (2 bytes in your ISA)
     if (maxoff % 2)
         maxoff++;
 
@@ -689,13 +832,20 @@ void gen_ex_isa_emit_toplevel(Node *v) {
     switch (v->kind) {
     case AST_FUNC: {
         // Emit function label and prologue
+            //debug!
+            printf("got to function label generation for:%s\n", v->fname);
+
         fprintf(outputfp, "# --- Function: %s (addr 0x%02x) ---\n",
                 v->fname ? v->fname : "(unnamed)", code_offset);
         
+            printf("got to frame size calculation for:%s\n", v->fname);
+
         int frame_size = ex_isa_compute_frame_size(v);
 
+            printf("got to function prologue generation for:%s\n", v->fname);
+
         emit_func_prologue(v, frame_size);
-        
+
         // Emit function body
         if (v->body) {
             emit_expr(v->body);
@@ -705,6 +855,8 @@ void gen_ex_isa_emit_toplevel(Node *v) {
         }
         
         emit_func_epilogue(v, frame_size);
+
+        printf("got past function epilogue generation for:%s\n", v->fname);
         
         fprintf(outputfp, "# --- End function ---\n");
         break;
