@@ -956,6 +956,12 @@ static void init_predefined_macros() {
     read_from_string("#include <" BUILD_DIR "/include/8cc.h>");
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+static void localtime_r(const time_t *timer, struct tm *result) {
+    localtime_s(result, timer);
+}
+#endif
+
 void init_now() {
     time_t timet = time(NULL);
     localtime_r(&timet, &now);

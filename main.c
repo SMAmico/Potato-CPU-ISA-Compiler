@@ -4,9 +4,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include <sys/wait.h>
+#if defined(__has_include)
+# if __has_include(<sys/wait.h>)
+#  include <sys/wait.h>
+# endif
+#elif defined(__unix__) || defined(__APPLE__)
+# include <sys/wait.h>
+#endif
 #include <unistd.h>
+#if defined(_WIN32) || defined(_WIN64)
+# include <process.h>
+# include <fcntl.h>
+# include <io.h>
+#endif
 #include "8cc.h"
+#include "target.h"
 
 static char *infile;
 static char *outfile;
@@ -17,6 +29,7 @@ static bool dumpasm;
 static bool dontlink;
 static Buffer *cppdefs;
 static Vector *tmpfiles = &EMPTY_VECTOR;
+char *target_arch = "x86-64";  // Default target: x86-64 or "ex-isa"
 
 static void usage(int exitcode) {
     fprintf(exitcode ? stderr : stdout,
@@ -68,8 +81,12 @@ static FILE *open_asmfile() {
         asmfile = outfile ? outfile : replace_suffix(base(infile), 's');
     } else {
         asmfile = format("/tmp/8ccXXXXXX.s");
-        if (!mkstemps(asmfile, 2))
-            perror("mkstemps");
+        int fd = mkstemp(asmfile);
+        if (fd < 0) {
+            perror("mkstemp");
+        } else {
+            close(fd);
+        }
         vec_push(tmpfiles, asmfile);
     }
     if (!strcmp(asmfile, "-"))
@@ -99,8 +116,13 @@ static void parse_f_arg(char *s) {
 }
 
 static void parse_m_arg(char *s) {
-    if (strcmp(s, "64"))
-        error("Only 64 is allowed for -m, but got %s", s);
+    if (!strcmp(s, "64")) {
+        target_arch = "x86-64";
+    } else if (!strcmp(s, "ex-isa")) {
+        target_arch = "ex-isa";
+    } else {
+        error("Unknown -m target: %s (supported: 64, ex-isa)", s);
+    }
 }
 
 static void parseopt(int argc, char **argv) {
@@ -172,37 +194,68 @@ int main(int argc, char **argv) {
     lex_init(infile);
     cpp_init();
     parse_init();
-    set_output_file(open_asmfile());
+    
+    FILE *asmfp = open_asmfile();
+    set_output_file(asmfp);
+    
+    // Add target-specific preprocessor defines
+    if (!strcmp(target_arch, "ex-isa")) {
+        buf_printf(cppdefs, "#define __EX_ISA__ 1\n");
+    }
+    
     if (buf_len(cppdefs) > 0)
         read_from_string(buf_body(cppdefs));
 
     if (cpponly)
         preprocess();
 
+    // Initialize the target backend
+    target_init(asmfp);
+    
     Vector *toplevels = read_toplevels();
     for (int i = 0; i < vec_len(toplevels); i++) {
         Node *v = vec_get(toplevels, i);
         if (dumpast)
             printf("%s", node2s(v));
         else
-            emit_toplevel(v);
+            target_emit_toplevel(v);
     }
 
+    // Finalize the target backend
+    target_finalize();
+    
     close_output_file();
 
     if (!dumpast && !dumpasm) {
         if (!outfile)
             outfile = replace_suffix(base(infile), 'o');
-        pid_t pid = fork();
-        if (pid < 0) perror("fork");
-        if (pid == 0) {
-            execlp("as", "as", "-o", outfile, "-c", asmfile, (char *)NULL);
-            perror("execl failed");
+        
+        // Skip GNU assembler for EX_ISA target
+        if (!strcmp(target_arch, "ex-isa")) {
+            // For EX_ISA, we already emitted EX_ISA assembly
+            // In a full implementation, we'd call a separate EX_ISA assembler
+            // For now, just skip the GNU as step
+            fprintf(stderr, "Note: EX_ISA target does not use GNU assembler\n");
+        } else {
+#if defined(_WIN32) || defined(_WIN64)
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd), "as -o \"%s\" -c \"%s\"", outfile, asmfile);
+            int status = system(cmd);
+            if (status != 0)
+                error("as failed");
+#else
+            pid_t pid = fork();
+            if (pid < 0) perror("fork");
+            if (pid == 0) {
+                execlp("as", "as", "-o", outfile, "-c", asmfile, (char *)NULL);
+                perror("execl failed");
+            }
+            int status;
+            waitpid(pid, &status, 0);
+            if (status < 0)
+                error("as failed");
+#endif
         }
-        int status;
-        waitpid(pid, &status, 0);
-        if (status < 0)
-            error("as failed");
     }
     return 0;
 }

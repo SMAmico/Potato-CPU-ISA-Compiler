@@ -327,7 +327,7 @@ Token *read_token(void);
 
 // debug.c
 char *ty2s(Type *ty);
-char *node2s(Node *node);
+char *node2s(Node * node);
 char *tok2s(Token *tok);
 
 // dict.c

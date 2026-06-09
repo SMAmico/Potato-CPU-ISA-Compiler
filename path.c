@@ -8,10 +8,26 @@
 
 // Returns the shortest path for the given full path to a file.
 static char *clean(char *p) {
-    assert(*p == '/');
+    // Normalize Windows backslashes to forward slashes
+    for (char *s = p; *s; s++)
+        if (*s == '\\')
+            *s = '/';
+
     char buf[PATH_MAX];
     char *q = buf;
-    *q++ = '/';
+
+    if (*p == '/') {
+        *q++ = '/';
+        p++;
+    } else if (p[1] == ':' && p[2] == '/') {
+        *q++ = p[0];
+        *q++ = ':';
+        *q++ = '/';
+        p += 3;
+    } else {
+        assert(*p == '/');
+    }
+
     for (;;) {
         if (*p == '/') {
             p++;

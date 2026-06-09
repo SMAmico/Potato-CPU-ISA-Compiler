@@ -1,9 +1,9 @@
 CFLAGS=-Wall -Wno-strict-aliasing -std=gnu11 -g -I. -O0
 OBJS=cpp.o debug.o dict.o gen.o lex.o vector.o parse.o buffer.o map.o \
-     error.o path.o file.o set.o encoding.o
+     error.o path.o file.o set.o encoding.o gen_dispatch.o gen_ex_isa.o
 TESTS := $(patsubst %.c,%.bin,$(filter-out test/testmain.c,$(wildcard test/*.c)))
 ECC=./8cc
-override CFLAGS += -DBUILD_DIR='"$(shell pwd)"'
+override CFLAGS += -DBUILD_DIR='"."'
 
 8cc: 8cc.h main.o $(OBJS)
 	cc -o $@ main.o $(OBJS) $(LDFLAGS)

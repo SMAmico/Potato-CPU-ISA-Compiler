@@ -26,6 +26,7 @@ static char *last_loc = "";
 
 static void emit_addr(Node *node);
 static void emit_expr(Node *node);
+static void NewFunction();
 static void emit_decl_init(Vector *inits, int off, int totalsize);
 static void do_emit_data(Vector *inits, int size, int off, int depth);
 static void emit_data(Node *v, int off, int depth);
