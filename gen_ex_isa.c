@@ -126,6 +126,23 @@ void gen_ex_isa_set_output_file(FILE *fp) {
 // Instruction emission helpers
 // ============================================================================
 
+static void push_reg(int reg) {
+    //store register at the stack register:
+
+    //done by subtracting stack offset from stack pointer
+    //then copying register data into stack pointer address
+
+    //push data to stack
+    emit_instr_hex(make_mem_instr(OP_STR, 1, stack_ptr));
+    //update stack pointer
+    stack_ptr--; 
+    //blank out R1
+    emit_instr_hex(make_instr(OP_XOR, 1, 1, 1));
+    //set R1 to 1 if 
+    
+    emit_instr_hex(make_instr(OP_ADD, ));
+}
+
 // Emit a 16-bit instruction as hex
 static void emit_instr_hex(uint16_t instr) {
     if (!outputfp) return;
@@ -143,12 +160,10 @@ static uint16_t make_instr(int opcode, int a, int b, int c) {
 }
 
 // Create a memory instruction: OPCODE REG ADDR
-// For LDR: [OPCODE(4bits)][ADDR(8bits)][REG(4bits)]
+// For LDR: [OPCODE(4bits)][REG(4bits)][ADDR(8bits)]
 // For STR: [OPCODE(4bits)][REG(4bits)][ADDR(8bits)]
 static uint16_t make_mem_instr(int opcode, int reg, int addr) {
-    if (opcode == OP_LDR)
-        return ((opcode & 0xF) << 12) | ((addr & 0xFF) << 4) | (reg & 0xF);
-    else if (opcode == OP_STR)
+    if (opcode == OP_STR || opcode == OP_LDR)
         return ((opcode & 0xF) << 12) | ((reg & 0xF) << 8) | (addr & 0xFF);
     return 0;
 }
@@ -192,6 +207,12 @@ static void emit_jmp(int addr) {
 static void emit_jnz(int addr, int reg) {
     uint16_t instr = make_jump_instr(OP_JNZ, addr, reg);
     emit_instr_hex(instr);
+}
+
+static void emit_xor(int ra, int rb, int rc) {
+    //get temp register
+    emit_instr_hex(make_instr(OP_AND, ra, rb, rc));
+    emit_instr_hex(make_instr(OP_))
 }
 
 // Generate a unique label
@@ -395,6 +416,7 @@ static void emit_conv(Node *node) {
 
         // true: R0 = 1
         register_label(l_true);
+        
         emit_literal_into_R0(1);
 
         register_label(l_end);
@@ -469,6 +491,33 @@ static void emit_conv(Node *node) {
     return;
 }
 
+static void emit_load_convert(Type *to, Type *from) {
+    //since we only have shorts, any special types won't actually do anything. woohoo!
+    if (to->kind == KIND_BOOL)
+        emit_to_bool(from);
+    else if (is_inttype(from) && is_inttype(to))
+        emit_intcast(from);
+    else if (is_inttype(to))
+        emit_toint(from);
+
+}
+
+static void emit_to_bool(Type *ty) {
+    if(is_flotype(ty)) {
+        
+    } else {
+
+    }
+}
+
+static void emit_ioint(Type *ty) {
+
+}
+
+static void emit_intcast(Type *ty) {
+    
+}
+
 // Emit binary arithmetic: result in R0
 // Pattern: left operand -> R0, right operand -> R1, ALU op -> R0 = R0 op R1
 static void emit_binop_add(Node *node) {
@@ -501,6 +550,8 @@ static void emit_binop_xor(Node *node) {
     int temp_reg = get_temp_reg();
     emit_alu(OP_ADD, temp_reg, 0, 0);  // temp = R0
     emit_expr(node->right);     // result in R0
+
+    //replace XOR with the hacked-in version
     emit_alu(OP_XOR, 0, temp_reg, 0);  // R0 = temp ^ R0
 }
 
@@ -870,6 +921,7 @@ void gen_ex_isa_emit_toplevel(Node *v) {
         if (data_offset < 0xC0) {
             data_offset += 2;  // Each global takes at least 2 bytes (1 word)
         }
+        
         break;
     }
     default:

@@ -405,6 +405,9 @@ bool is_inttype(Type *ty) {
     }
 }
 
+/// @brief checks if float, double, or long double
+/// @param ty 
+/// @return 
 bool is_flotype(Type *ty) {
     switch (ty->kind) {
     case KIND_FLOAT: case KIND_DOUBLE: case KIND_LDOUBLE:

@@ -49,6 +49,7 @@ static void pop_function(void *ignore) {
 #define SAVE
 #endif
 
+///make a buffer of addresses for use
 static char *get_caller_list() {
     Buffer *b = make_buffer();
     for (int i = 0; i < vec_len(functions); i++) {
@@ -60,14 +61,21 @@ static char *get_caller_list() {
     return buf_body(b);
 }
 
+/// @brief set the output file for the program
+/// @param fp 
 void set_output_file(FILE *fp) {
     outputfp = fp;
 }
 
+/// @brief close the output file when the program is done
 void close_output_file() {
     fclose(outputfp);
 }
 
+/// @brief replace # with %% to make vprintf work
+/// @param line 
+/// @param fmt 
+/// @param  
 static void emitf(int line, char *fmt, ...) {
     // Replace "#" with "%%" so that vfprintf prints out "#" as "%".
     char buf[256];
@@ -98,6 +106,9 @@ static void emitf(int line, char *fmt, ...) {
     fprintf(outputfp, "\n");
 }
 
+/// @brief output one line of instructions
+/// @param fmt 
+/// @param  
 static void emit_nostack(char *fmt, ...) {
     fprintf(outputfp, "\t");
     va_list args;
@@ -107,6 +118,11 @@ static void emit_nostack(char *fmt, ...) {
     fprintf(outputfp, "\n");
 }
 
+/// @brief convert data size to the matching register type
+///        a-type or c-type, and by bit length
+/// @param ty 
+/// @param r 
+/// @return 
 static char *get_int_reg(Type *ty, char r) {
     assert(r == 'a' || r == 'c');
     switch (ty->size) {
@@ -119,6 +135,9 @@ static char *get_int_reg(Type *ty, char r) {
     }
 }
 
+/// @brief select the appropriate mov command by bit length
+/// @param ty 
+/// @return 
 static char *get_load_inst(Type *ty) {
     switch (ty->size) {
     case 1: return "movsbq";
@@ -130,11 +149,17 @@ static char *get_load_inst(Type *ty) {
     }
 }
 
+/// @brief align n data with m offset 
+/// @param n 
+/// @param m 
+/// @return 
 static int align(int n, int m) {
     int rem = n % m;
     return (rem == 0) ? n : n - rem + m;
 }
 
+/// @brief emits: push a register to the local stack, update sp
+/// @param reg 
 static void push_xmm(int reg) {
     SAVE;
     emit("sub $8, #rsp");
@@ -142,6 +167,8 @@ static void push_xmm(int reg) {
     stackpos += 8;
 }
 
+/// @brief emits: pop a register from the local stack, update sp
+/// @param reg 
 static void pop_xmm(int reg) {
     SAVE;
     emit("movsd (#rsp), #xmm%d", reg);
@@ -150,12 +177,16 @@ static void pop_xmm(int reg) {
     assert(stackpos >= 0);
 }
 
+/// @brief emits: push a register to the global stack, update sp
+/// @param reg 
 static void push(char *reg) {
     SAVE;
     emit("push #%s", reg);
     stackpos += 8;
 }
 
+/// @brief emits: pop a register from the global stack, update sp
+/// @param reg 
 static void pop(char *reg) {
     SAVE;
     emit("pop #%s", reg);
@@ -163,6 +194,9 @@ static void pop(char *reg) {
     assert(stackpos >= 0);
 }
 
+/// @brief emits: push a complete structure to the stack
+/// @param size 
+/// @return 
 static int push_struct(int size) {
     SAVE;
     int aligned = align(size, 8);
@@ -189,6 +223,8 @@ static int push_struct(int size) {
     return aligned;
 }
 
+/// @brief emit: trims off last bit of rax
+/// @param ty 
 static void maybe_emit_bitshift_load(Type *ty) {
     SAVE;
     if (ty->bitsize <= 0)
@@ -200,16 +236,27 @@ static void maybe_emit_bitshift_load(Type *ty) {
     pop("rcx");
 }
 
+/// @brief emit: merges last bit of rcx with rax, copies addr into free register
+/// @param ty 
+/// @param addr 
 static void maybe_emit_bitshift_save(Type *ty, char *addr) {
     SAVE;
     if (ty->bitsize <= 0)
         return;
+    //save rcx and rdi
     push("rcx");
     push("rdi");
+
+    //operation: rax(minus last bit) << bitoff ||  rcx(last bit) << bitoff
+
+    //mask out last bit of rax
     emit("mov $0x%lx, #rdi", (1 << (long)ty->bitsize) - 1);
     emit("and #rdi, #rax");
+    //adjust for offset
     emit("shl $%d, #rax", ty->bitoff);
+    //copy storage address into free register
     emit("mov %s, #%s", addr, get_int_reg(ty, 'c'));
+    //mask out last bit of rcx 
     emit("mov $0x%lx, #rdi", ~(((1 << (long)ty->bitsize) - 1) << ty->bitoff));
     emit("and #rdi, #rcx");
     emit("or #rcx, #rax");
@@ -217,6 +264,10 @@ static void maybe_emit_bitshift_save(Type *ty, char *addr) {
     pop("rcx");
 }
 
+/// @brief emit: loads global var/array from label into rax
+/// @param ty 
+/// @param label 
+/// @param off 
 static void emit_gload(Type *ty, char *label, int off) {
     SAVE;
     if (ty->kind == KIND_ARRAY) {
@@ -231,6 +282,8 @@ static void emit_gload(Type *ty, char *label, int off) {
     maybe_emit_bitshift_load(ty);
 }
 
+/// @brief emit: converts data in e/rax to int based on type
+/// @param ty 
 static void emit_intcast(Type *ty) {
     switch(ty->kind) {
     case KIND_BOOL:
@@ -249,6 +302,8 @@ static void emit_intcast(Type *ty) {
     }
 }
 
+/// @brief emit: forcibly trims float and double in eax to int
+/// @param ty 
 static void emit_toint(Type *ty) {
     SAVE;
     if (ty->kind == KIND_FLOAT)
@@ -257,6 +312,10 @@ static void emit_toint(Type *ty) {
         emit("cvttsd2si #xmm0, #eax");
 }
 
+/// @brief emit: loads local variable (array, int, float, double) from base+offset into rax
+/// @param ty 
+/// @param base 
+/// @param off 
 static void emit_lload(Type *ty, char *base, int off) {
     SAVE;
     if (ty->kind == KIND_ARRAY) {
@@ -272,6 +331,8 @@ static void emit_lload(Type *ty, char *base, int off) {
     }
 }
 
+/// @brief emit: converts rax into boolean
+/// @param ty 
 static void maybe_convert_bool(Type *ty) {
     if (ty->kind == KIND_BOOL) {
         emit("test #rax, #rax");
@@ -279,6 +340,10 @@ static void maybe_convert_bool(Type *ty) {
     }
 }
 
+/// @brief emit: saves global variable back to memory as variable
+/// @param varname 
+/// @param ty 
+/// @param off 
 static void emit_gsave(char *varname, Type *ty, int off) {
     SAVE;
     assert(ty->kind != KIND_ARRAY);
@@ -289,6 +354,9 @@ static void emit_gsave(char *varname, Type *ty, int off) {
     emit("mov #%s, %s", reg, addr);
 }
 
+/// @brief emit: saves local variable in xmm0 to memory
+/// @param ty 
+/// @param off 
 static void emit_lsave(Type *ty, int off) {
     SAVE;
     if (ty->kind == KIND_FLOAT) {
@@ -304,6 +372,9 @@ static void emit_lsave(Type *ty, int off) {
     }
 }
 
+/// @brief emit: dereference value from utility registers to rax addr
+/// @param ty 
+/// @param off 
 static void do_emit_assign_deref(Type *ty, int off) {
     SAVE;
     emit("mov (#rsp), #rcx");
@@ -315,6 +386,8 @@ static void do_emit_assign_deref(Type *ty, int off) {
     pop("rax");
 }
 
+/// @brief emit: helper: push rax, deref pointer with offset 0
+/// @param var 
 static void emit_assign_deref(Node *var) {
     SAVE;
     push("rax");
@@ -322,6 +395,10 @@ static void emit_assign_deref(Node *var) {
     do_emit_assign_deref(var->operand->ty->ptr, 0);
 }
 
+/// @brief emit: do arithmetic (add, sub) on two pointers
+/// @param kind 
+/// @param left 
+/// @param right 
 static void emit_pointer_arith(char kind, Node *left, Node *right) {
     SAVE;
     emit_expr(left);
@@ -341,6 +418,9 @@ static void emit_pointer_arith(char kind, Node *left, Node *right) {
     pop("rcx");
 }
 
+/// @brief emit: blank out portions of memory
+/// @param start 
+/// @param end 
 static void emit_zero_filler(int start, int end) {
     SAVE;
     for (; start <= end - 4; start += 4)
@@ -349,6 +429,8 @@ static void emit_zero_filler(int start, int end) {
         emit("movb $0, %d(#rbp)", start);
 }
 
+/// @brief check the localvar initialized
+/// @param node 
 static void ensure_lvar_init(Node *node) {
     SAVE;
     assert(node->kind == AST_LVAR);
@@ -357,6 +439,10 @@ static void ensure_lvar_init(Node *node) {
     node->lvarinit = NULL;
 }
 
+/// @brief creaet a reference to a struct based on its type, or deref
+/// @param struc 
+/// @param field 
+/// @param off 
 static void emit_assign_struct_ref(Node *struc, Type *field, int off) {
     SAVE;
     switch (struc->kind) {
@@ -380,6 +466,10 @@ static void emit_assign_struct_ref(Node *struc, Type *field, int off) {
     }
 }
 
+/// @brief loads a struct reference from memory based on type
+/// @param struc 
+/// @param field 
+/// @param off 
 static void emit_load_struct_ref(Node *struc, Type *field, int off) {
     SAVE;
     switch (struc->kind) {
@@ -402,6 +492,8 @@ static void emit_load_struct_ref(Node *struc, Type *field, int off) {
     }
 }
 
+/// @brief stores a struct, lvar, gvar or deref based on type
+/// @param var 
 static void emit_store(Node *var) {
     SAVE;
     switch (var->kind) {
@@ -416,12 +508,18 @@ static void emit_store(Node *var) {
     }
 }
 
+/// @brief emit: convert a local variable to boolean (check 1/0)
+/// @param ty 
 static void emit_to_bool(Type *ty) {
     SAVE;
     if (is_flotype(ty)) {
+        //push the variable to the stack
         push_xmm(1);
-        emit("xorpd #xmm1, #xmm1");
+        //xor a copy with itself
+        emit("xorpd #xmm1, #xmm1"); 
+        //compare it with xmm0 (what is it?) according to its type
         emit("%s #xmm1, #xmm0", (ty->kind == KIND_FLOAT) ? "ucomiss" : "ucomisd");
+        //set the alu status register if 
         emit("setne #al");
         pop_xmm(1);
     } else {
@@ -431,6 +529,10 @@ static void emit_to_bool(Type *ty) {
     emit("movzb #al, #eax");
 }
 
+/// @brief emit: compare local variable to instance (float specific)
+/// @param inst 
+/// @param usiginst 
+/// @param node 
 static void emit_comp(char *inst, char *usiginst, Node *node) {
     SAVE;
     if (is_flotype(node->left->ty)) {
@@ -460,6 +562,8 @@ static void emit_comp(char *inst, char *usiginst, Node *node) {
     emit("movzb #al, #eax");
 }
 
+/// @brief emit: integer arithmetic
+/// @param node 
 static void emit_binop_int_arith(Node *node) {
     SAVE;
     char *op = NULL;
@@ -496,6 +600,8 @@ static void emit_binop_int_arith(Node *node) {
     }
 }
 
+/// @brief emit: floating-point arithmetic
+/// @param node 
 static void emit_binop_float_arith(Node *node) {
     SAVE;
     char *op;
@@ -515,6 +621,9 @@ static void emit_binop_float_arith(Node *node) {
     emit("%s #xmm1, #xmm0", op);
 }
 
+/// @brief emit: load and convert data between types
+/// @param to 
+/// @param from 
 static void emit_load_convert(Type *to, Type *from) {
     SAVE;
     if (is_inttype(from) && to->kind == KIND_FLOAT)
@@ -533,12 +642,15 @@ static void emit_load_convert(Type *to, Type *from) {
         emit_toint(from);
 }
 
+/// @brief emit: return call
 static void emit_ret() {
     SAVE;
     emit("leave");
     emit("ret");
 }
 
+/// @brief emit: binop comparison (LT LE EQ NE)
+/// @param node 
 static void emit_binop(Node *node) {
     SAVE;
     if (node->ty->kind == KIND_PTR) {
@@ -559,6 +671,10 @@ static void emit_binop(Node *node) {
         error("internal error: %s", node2s(node));
 }
 
+/// @brief emit: save a literal primitive to memory
+/// @param node 
+/// @param totype 
+/// @param off 
 static void emit_save_literal(Node *node, Type *totype, int off) {
     switch (totype->kind) {
     case KIND_BOOL:  emit("movb $%d, %d(#rbp)", !!node->ival, off); break;
@@ -588,6 +704,8 @@ static void emit_save_literal(Node *node, Type *totype, int off) {
     }
 }
 
+/// @brief emit: emit address for a variable (local global struct func)
+/// @param node 
 static void emit_addr(Node *node) {
     switch (node->kind) {
     case AST_LVAR:
@@ -612,6 +730,9 @@ static void emit_addr(Node *node) {
     }
 }
 
+/// @brief emit: duplicate a struct in memory
+/// @param left 
+/// @param right 
 static void emit_copy_struct(Node *left, Node *right) {
     push("rcx");
     push("r11");
@@ -635,12 +756,20 @@ static void emit_copy_struct(Node *left, Node *right) {
     pop("rcx");
 }
 
+/// @brief compare initialization offsets
+/// @param x 
+/// @param y 
+/// @return 
 static int cmpinit(const void *x, const void *y) {
     Node *a = *(Node **)x;
     Node *b = *(Node **)y;
     return a->initoff - b->initoff;
 }
 
+/// @brief blank unfilled fields of variable with at least one field init and fill passed fields
+/// @param inits 
+/// @param off 
+/// @param totalsize 
 static void emit_fill_holes(Vector *inits, int off, int totalsize) {
     // If at least one of the fields in a variable are initialized,
     // unspecified fields has to be initialized with 0.
@@ -660,6 +789,10 @@ static void emit_fill_holes(Vector *inits, int off, int totalsize) {
     emit_zero_filler(lastend + off, totalsize + off);
 }
 
+/// @brief emit: variable declaration initialization. creates and saves a variable
+/// @param inits 
+/// @param off 
+/// @param totalsize 
 static void emit_decl_init(Vector *inits, int off, int totalsize) {
     emit_fill_holes(inits, off, totalsize);
     for (int i = 0; i < vec_len(inits); i++) {
@@ -675,12 +808,18 @@ static void emit_decl_init(Vector *inits, int off, int totalsize) {
     }
 }
 
+/// @brief emit: variable instruction for ++x --x
+/// @param node 
+/// @param op 
 static void emit_pre_inc_dec(Node *node, char *op) {
     emit_expr(node->operand);
     emit("%s $%d, #rax", op, node->ty->ptr ? node->ty->ptr->size : 1);
     emit_store(node->operand);
 }
 
+/// @brief emit: variable instruction for x++ x--
+/// @param node 
+/// @param op 
 static void emit_post_inc_dec(Node *node, char *op) {
     SAVE;
     emit_expr(node->operand);
@@ -690,6 +829,8 @@ static void emit_post_inc_dec(Node *node, char *op) {
     pop("rax");
 }
 
+/// @brief sort amount of floating point versus int in a vector
+/// @param args 
 static void set_reg_nums(Vector *args) {
     numgp = numfp = 0;
     for (int i = 0; i < vec_len(args); i++) {
@@ -701,19 +842,27 @@ static void set_reg_nums(Vector *args) {
     }
 }
 
+/// @brief emit: test then jump to label on equal
+/// @param label 
 static void emit_je(char *label) {
     emit("test #rax, #rax");
     emit("je %s", label);
 }
 
+/// @brief emit: ASM label
+/// @param label 
 static void emit_label(char *label) {
     emit("%s:", label);
 }
 
+/// @brief emit: jump to label
+/// @param label 
 static void emit_jmp(char *label) {
     emit("jmp %s", label);
 }
 
+/// @brief emit: copy literal into registers according to type
+/// @param node 
 static void emit_literal(Node *node) {
     SAVE;
     switch (node->ty->kind) {
@@ -770,6 +919,9 @@ static void emit_literal(Node *node) {
     }
 }
 
+/// @brief count the number of lines in a buffer, then split the buffer into a set of null-terminated lines
+/// @param buf 
+/// @return 
 static char **split(char *buf) {
     char *p = buf;
     int len = 1;
@@ -803,6 +955,9 @@ static char **split(char *buf) {
     return r;
 }
 
+/// @brief read a source file
+/// @param file 
+/// @return 
 static char **read_source_file(char *file) {
     FILE *fp = fopen(file, "r");
     if (!fp)
@@ -819,6 +974,9 @@ static char **read_source_file(char *file) {
     return split(buf);
 }
 
+/// @brief print a specific line in a source file
+/// @param file 
+/// @param line 
 static void maybe_print_source_line(char *file, int line) {
     if (!dumpsource)
         return;
@@ -835,6 +993,8 @@ static void maybe_print_source_line(char *file, int line) {
     emit_nostack("# %s", lines[line - 1]);
 }
 
+/// @brief print a specific line in a source file
+/// @param node 
 static void maybe_print_source_loc(Node *node) {
     if (!node->sourceLoc)
         return;
@@ -853,17 +1013,23 @@ static void maybe_print_source_loc(Node *node) {
     last_loc = loc;
 }
 
+/// @brief emit: load and check local variable initialization
+/// @param node 
 static void emit_lvar(Node *node) {
     SAVE;
     ensure_lvar_init(node);
     emit_lload(node->ty, "rbp", node->loff);
 }
 
+/// @brief emit: load global variable
+/// @param node 
 static void emit_gvar(Node *node) {
     SAVE;
     emit_gload(node->ty, node->glabel, 0);
 }
 
+/// @brief emit: push r11, jump out of return address loop after rax cycles, then return r11
+/// @param node 
 static void emit_builtin_return_address(Node *node) {
     push("r11");
     assert(vec_len(node->args) == 1);
@@ -882,8 +1048,8 @@ static void emit_builtin_return_address(Node *node) {
     pop("r11");
 }
 
-// Set the register class for parameter passing to RAX.
-// 0 is INTEGER, 1 is SSE, 2 is MEMORY.
+/// @brief Set the register class for parameter passing to RAX. 0 is INTEGER, 1 is SSE, 2 is MEMORY.
+/// @param node 
 static void emit_builtin_reg_class(Node *node) {
     Node *arg = vec_get(node->args, 0);
     assert(arg->ty->kind == KIND_PTR);
@@ -896,6 +1062,8 @@ static void emit_builtin_reg_class(Node *node) {
         emit("mov $0, #eax");
 }
 
+/// @brief emit: copy variables into assembly registers
+/// @param node 
 static void emit_builtin_va_start(Node *node) {
     SAVE;
     assert(vec_len(node->args) == 1);
@@ -908,6 +1076,9 @@ static void emit_builtin_va_start(Node *node) {
     pop("rcx");
 }
 
+/// @brief 
+/// @param node 
+/// @return 
 static bool maybe_emit_builtin(Node *node) {
     SAVE;
     if (!strcmp("__builtin_return_address", node->fname)) {
@@ -925,6 +1096,11 @@ static bool maybe_emit_builtin(Node *node) {
     return false;
 }
 
+/// @brief split off function input arguments into type buckets
+/// @param ints 
+/// @param floats 
+/// @param rest 
+/// @param args 
 static void classify_args(Vector *ints, Vector *floats, Vector *rest, Vector *args) {
     SAVE;
     int ireg = 0, xreg = 0;
@@ -940,6 +1116,9 @@ static void classify_args(Vector *ints, Vector *floats, Vector *rest, Vector *ar
     }
 }
 
+/// @brief save function register arguments to stack
+/// @param nints 
+/// @param nfloats 
 static void save_arg_regs(int nints, int nfloats) {
     SAVE;
     assert(nints <= 6);
@@ -950,6 +1129,9 @@ static void save_arg_regs(int nints, int nfloats) {
         push_xmm(i);
 }
 
+/// @brief restore function argument registers from stack
+/// @param nints 
+/// @param nfloats 
 static void restore_arg_regs(int nints, int nfloats) {
     SAVE;
     for (int i = nfloats - 1; i > 0; i--)
@@ -958,6 +1140,9 @@ static void restore_arg_regs(int nints, int nfloats) {
         pop(REGS[i]);
 }
 
+/// @brief emit: push all function arguments to the stack
+/// @param vals 
+/// @return 
 static int emit_args(Vector *vals) {
     SAVE;
     int r = 0;
@@ -979,24 +1164,32 @@ static int emit_args(Vector *vals) {
     return r;
 }
 
+/// @brief pop n integer arguments from stack
+/// @param nints 
 static void pop_int_args(int nints) {
     SAVE;
     for (int i = nints - 1; i >= 0; i--)
         pop(REGS[i]);
 }
 
+/// @brief pop n float arguments from stack
+/// @param nfloats 
 static void pop_float_args(int nfloats) {
     SAVE;
     for (int i = nfloats - 1; i >= 0; i--)
         pop_xmm(i);
 }
 
+/// @brief emit: convert return data to boolean
+/// @param ty 
 static void maybe_booleanize_retval(Type *ty) {
     if (ty->kind == KIND_BOOL) {
         emit("movzx #al, #rax");
     }
 }
 
+/// @brief emit: call function
+/// @param node 
 static void emit_func_call(Node *node) {
     SAVE;
     int opos = stackpos;
@@ -1046,6 +1239,8 @@ static void emit_func_call(Node *node) {
     assert(opos == stackpos);
 }
 
+/// @brief emit: declare variable
+/// @param node 
 static void emit_decl(Node *node) {
     SAVE;
     if (!node->declinit)
@@ -1053,12 +1248,16 @@ static void emit_decl(Node *node) {
     emit_decl_init(node->declinit, node->declvar->loff, node->declvar->ty->size);
 }
 
+/// @brief emit: convert expression between types
+/// @param node 
 static void emit_conv(Node *node) {
     SAVE;
     emit_expr(node->operand);
     emit_load_convert(node->ty, node->operand->ty);
 }
 
+/// @brief emit: dereference a variable pointer
+/// @param node 
 static void emit_deref(Node *node) {
     SAVE;
     emit_expr(node->operand);
@@ -1066,6 +1265,8 @@ static void emit_deref(Node *node) {
     emit_load_convert(node->ty, node->operand->ty->ptr);
 }
 
+/// @brief emit: ternary statement
+/// @param node 
 static void emit_ternary(Node *node) {
     SAVE;
     emit_expr(node->cond);
@@ -1084,12 +1285,16 @@ static void emit_ternary(Node *node) {
     }
 }
 
+/// @brief emit: jump statement
+/// @param node 
 static void emit_goto(Node *node) {
     SAVE;
     assert(node->newlabel);
     emit_jmp(node->newlabel);
 }
 
+/// @brief emit: return statement
+/// @param node 
 static void emit_return(Node *node) {
     SAVE;
     if (node->retval) {
@@ -1099,12 +1304,16 @@ static void emit_return(Node *node) {
     emit_ret();
 }
 
+/// @brief emit: compound statement
+/// @param node 
 static void emit_compound_stmt(Node *node) {
     SAVE;
     for (int i = 0; i < vec_len(node->stmts); i++)
         emit_expr(vec_get(node->stmts, i));
 }
 
+/// @brief emit: logical AND operation
+/// @param node 
 static void emit_logand(Node *node) {
     SAVE;
     char *end = make_label();
@@ -1120,6 +1329,8 @@ static void emit_logand(Node *node) {
     emit_label(end);
 }
 
+/// @brief emit: logical OR operation
+/// @param node 
 static void emit_logor(Node *node) {
     SAVE;
     char *end = make_label();
@@ -1135,6 +1346,8 @@ static void emit_logor(Node *node) {
     emit_label(end);
 }
 
+/// @brief emit: logical NOT operation
+/// @param node 
 static void emit_lognot(Node *node) {
     SAVE;
     emit_expr(node->operand);
@@ -1143,6 +1356,8 @@ static void emit_lognot(Node *node) {
     emit("movzb #al, #eax");
 }
 
+/// @brief emit: bitwise AND operation
+/// @param node 
 static void emit_bitand(Node *node) {
     SAVE;
     emit_expr(node->left);
@@ -1152,6 +1367,8 @@ static void emit_bitand(Node *node) {
     emit("and #rcx, #rax");
 }
 
+/// @brief emit: bitwise OR operation
+/// @param node 
 static void emit_bitor(Node *node) {
     SAVE;
     emit_expr(node->left);
@@ -1161,12 +1378,16 @@ static void emit_bitor(Node *node) {
     emit("or #rcx, #rax");
 }
 
+/// @brief  emit: bitwise NOT operation
+/// @param node 
 static void emit_bitnot(Node *node) {
     SAVE;
     emit_expr(node->left);
     emit("not #rax");
 }
 
+/// @brief emit: castvariable type operation
+/// @param node 
 static void emit_cast(Node *node) {
     SAVE;
     emit_expr(node->operand);
@@ -1174,12 +1395,16 @@ static void emit_cast(Node *node) {
     return;
 }
 
+/// @brief emit: comma operator 
+/// @param node 
 static void emit_comma(Node *node) {
     SAVE;
     emit_expr(node->left);
     emit_expr(node->right);
 }
 
+/// @brief emit: assign variable value
+/// @param node 
 static void emit_assign(Node *node) {
     SAVE;
     if (node->left->ty->kind == KIND_STRUCT &&
@@ -1192,17 +1417,23 @@ static void emit_assign(Node *node) {
     }
 }
 
+/// @brief emit: label address
+/// @param node 
 static void emit_label_addr(Node *node) {
     SAVE;
     emit("mov $%s, #rax", node->newlabel);
 }
 
+/// @brief emit: goto statement dependent on computation
+/// @param node 
 static void emit_computed_goto(Node *node) {
     SAVE;
     emit_expr(node->operand);
     emit("jmp *#rax");
 }
 
+/// @brief emit: all expression types converted to assembly
+/// @param node 
 static void emit_expr(Node *node) {
     SAVE;
     maybe_print_source_loc(node);
@@ -1256,6 +1487,8 @@ static void emit_expr(Node *node) {
     }
 }
 
+/// @brief emit: zero register
+/// @param size 
 static void emit_zero(int size) {
     SAVE;
     for (; size >= 8; size -= 8) emit(".quad 0");
@@ -1263,6 +1496,9 @@ static void emit_zero(int size) {
     for (; size > 0; size--)     emit(".byte 0");
 }
 
+/// @brief emit: pad data variables
+/// @param node 
+/// @param off 
 static void emit_padding(Node *node, int off) {
     SAVE;
     int diff = node->initoff - off;
@@ -1270,6 +1506,9 @@ static void emit_padding(Node *node, int off) {
     emit_zero(diff);
 }
 
+/// @brief  emit: address of data or variable
+/// @param operand 
+/// @param depth 
 static void emit_data_addr(Node *operand, int depth) {
     switch (operand->kind) {
     case AST_LVAR: {
@@ -1289,6 +1528,9 @@ static void emit_data_addr(Node *operand, int depth) {
     }
 }
 
+/// @brief emit: character pointer
+/// @param s 
+/// @param depth 
 static void emit_data_charptr(char *s, int depth) {
     char *label = make_label();
     emit(".data %d", depth + 1);
@@ -1298,6 +1540,10 @@ static void emit_data_charptr(char *s, int depth) {
     emit(".quad %s", label);
 }
 
+/// @brief emit: declare primitive type in x86 assembly
+/// @param ty 
+/// @param val 
+/// @param depth 
 static void emit_data_primtype(Type *ty, Node *val, int depth) {
     switch (ty->kind) {
     case KIND_FLOAT: {
@@ -1353,6 +1599,11 @@ static void emit_data_primtype(Type *ty, Node *val, int depth) {
     }
 }
 
+/// @brief emit: directly emit data into memory
+/// @param inits 
+/// @param size 
+/// @param off 
+/// @param depth 
 static void do_emit_data(Vector *inits, int size, int off, int depth) {
     SAVE;
     for (int i = 0; i < vec_len(inits) && 0 < size; i++) {
@@ -1394,6 +1645,10 @@ static void do_emit_data(Vector *inits, int size, int off, int depth) {
     emit_zero(size);
 }
 
+/// @brief emit: emit initialized data into memory
+/// @param v 
+/// @param off 
+/// @param depth 
 static void emit_data(Node *v, int off, int depth) {
     SAVE;
     emit(".data %d", depth);
@@ -1403,6 +1658,8 @@ static void emit_data(Node *v, int off, int depth) {
     do_emit_data(v->declinit, v->declvar->ty->size, off, depth);
 }
 
+/// @brief emit: emit uninitialized data space into memory
+/// @param v 
 static void emit_bss(Node *v) {
     SAVE;
     emit(".data");
@@ -1411,6 +1668,8 @@ static void emit_bss(Node *v) {
     emit(".lcomm %s, %d", v->declvar->glabel, v->declvar->ty->size);
 }
 
+/// @brief emit: emit global variable
+/// @param v 
 static void emit_global_var(Node *v) {
     SAVE;
     if (v->declinit)
@@ -1419,6 +1678,8 @@ static void emit_global_var(Node *v) {
         emit_bss(v);
 }
 
+/// @brief push register context to stack including vector registers
+/// @return 
 static int emit_regsave_area() {
     emit("sub $%d, #rsp", REGAREA_SIZE);
     emit("mov #rdi, (#rsp)");
@@ -1438,6 +1699,9 @@ static int emit_regsave_area() {
     return REGAREA_SIZE;
 }
 
+/// @brief emit: push all function parameters to stack
+/// @param params 
+/// @param off 
 static void push_func_params(Vector *params, int off) {
     int ireg = 0;
     int xreg = 0;
@@ -1477,6 +1741,8 @@ static void push_func_params(Vector *params, int off) {
     }
 }
 
+/// @brief  emit: push context to stack and prepare registers for new function
+/// @param func 
 static void emit_func_prologue(Node *func) {
     SAVE;
     emit(".text");
@@ -1509,6 +1775,8 @@ static void emit_func_prologue(Node *func) {
     }
 }
 
+/// @brief emit: emit function toplevel into memory
+/// @param v 
 void emit_toplevel(Node *v) {
     stackpos = 8;
     if (v->kind == AST_FUNC) {
