@@ -8,14 +8,19 @@
 
 // Conversion between x86 arch and the potato reg:
 //
-#define ax      0x0
-#define bx      0x1
-#define cx      0x2
-#define dx      0x3
-#define si      0x4
-#define di      0x5
-#define bp      0x6
-#define sp      0x7
+#define zero    0x0 //zero register for reference
+
+//x86 register mapping
+#define ax      0x1
+#define bx      0x2
+#define cx      0x3
+#define dx      0x4
+#define si      0x5
+#define di      0x6
+#define bp      0x7
+#define sp      0x8
+
+#define tmp     0x15 //last register used as temporary assembler register
 
 // EX_ISA instruction opcodes (4-bit)
 #define OP_NOP     0x0
@@ -188,7 +193,7 @@ static char *get_int_reg(Type *ty, char r) {
 /// @return 
 static char *get_load_inst(Type *ty) {
     switch (ty->size) {
-    case : return "move";
+    case : return "mov";
     default:
         error("Unknown data size: %s: %d", ty2s(ty), ty->size);
     }
@@ -203,22 +208,32 @@ static int align(int n, int m) {
     return (rem == 0) ? n : n - rem + m;
 }
 
-/// @brief emits: push a register to the local stack, update sp
+/// @brief emits: push an fp register to the stack, update sp
 /// @param reg 
 static void push_xmm(int reg) {
     SAVE;
-    emit("sub $8, #rsp");
-    emit("movsd #xmm%d, (#rsp)", reg);
-    stackpos += 8;
+    //subtract 1 from stack pointer (word address in direct memory mapping)
+    emit("movi %d, %d", tmp, 1);
+    emit("sub %d, %d, %d", sp, tmp, sp); //PROBLEM: sp only contains a register value, isa can only write direct values
+                                         //SOLUTION: make str and ldr pull addresses from registers instead of
+                                         // direct memory mapping, expanding address space to 16 bit 
+    //emit("sub $8, #rsp");
+    //then store register at stack pointer
+    emit("str, %d, %d", reg, sp);
+    //emit("movsd #xmm%d, (#rsp)", reg);
+    stackpos += 1;
 }
 
-/// @brief emits: pop a register from the local stack, update sp
+/// @brief emits: pop a register from the stack, update sp
 /// @param reg 
 static void pop_xmm(int reg) {
     SAVE;
-    emit("movsd (#rsp), #xmm%d", reg);
-    emit("add $8, #rsp");
-    stackpos -= 8;
+    emit("ldr,  ")
+    //add 1 to stack pointer
+    //emit("movsd (#rsp), #xmm%d", reg);
+    emit("movi %d, %d", tmp, 1);
+    emit("add %d, %d, %d", sp, tmp, sp);
+    stackpos -= 1;
     assert(stackpos >= 0);
 }
 
