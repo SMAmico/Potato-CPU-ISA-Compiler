@@ -177,6 +177,8 @@ static void pop_xmm(int reg) {
     assert(stackpos >= 0);
 }
 
+// -- 7/17/26 start --
+
 /// @brief emits: push a register to the global stack, update sp
 /// @param reg 
 static void push(char *reg) {
