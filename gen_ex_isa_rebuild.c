@@ -64,20 +64,21 @@
 #define ins_mult 0xD
 
 //dedicated registers for stack and frame pointers
-#define tmp 14
-#define sp 13
-#define fp 12
+#define tmp 14  //temp register for extended c interpretation
+#define sp 13   //stack pointer register
+#define fp 12   //frame pointer register
+#define gb 11   //global base register
 #define zero 0
 
 //x86 registers hardcoded to match EX_ISA registers
-#define rax 1
-#define rbx 2
-#define rcx 3
-#define rdx 4
-#define rsi 5
-#define rdi 6
-#define rbp fp
-#define rsp sp
+#define rax 1   //x86 accumulator register equivalent
+#define rbx 2   //x86 base register equivalent
+#define rcx 3   //x86 counter register equivalent
+#define rdx 4   //x86 data register equivalent
+#define rsi 5   //x86 source index register equivalent
+#define rdi 6   //x86 destination index register equivalent
+#define rbp fp  //x86 base pointer register equivalent
+#define rsp sp  //x86 stack pointer register equivalent
 
 // Copyright 2012 Rui Ueyama. Released under the MIT license.
 
@@ -313,7 +314,7 @@ static char *get_int_reg(Type *ty, char r) {
     assert(r == 'a' || r == 'c');
     switch (ty->size) {
         //16 bits is all we have!
-    case: return (r == 'a') ? "ax" : "cx";
+    case 16: return (r == 'a') ? rax : rcx;
     default:
         error("Unknown data size: %s: %d", ty2s(ty), ty->size);
     }
@@ -324,7 +325,7 @@ static char *get_int_reg(Type *ty, char r) {
 /// @return 
 static char *get_load_inst(Type *ty) {
     switch (ty->size) {
-    case : return "mov";
+    case 16: return ins_movi;
     default:
         error("Unknown data size: %s: %d", ty2s(ty), ty->size);
     }
@@ -439,3 +440,58 @@ static void maybe_emit_bitshift_load(Type *ty) {
     emit_ins(ins_and, rcx, rax, rax); //clear rcx
     pop(rcx);
 }
+
+// -- 7/22/26 start --
+
+/// @brief potato | emit: merges last bit of rcx with rax, copies addr into free register
+/// @param ty 
+/// @param addr 
+static void maybe_emit_bitshift_save(Type *ty, char *addr) {
+    SAVE;
+    if (ty->bitsize <= 0)
+        return;
+    //save rcx and rdi
+    push(rcx);
+    push(rdi);
+
+    //operation: rax(minus last bit) << bitoff ||  rcx(last bit) << bitoff
+
+    //mask out last bit of rax
+    //emit("mov $0x%lx, #rdi", (1 << (long)ty->bitsize) - 1);
+    emit_asm(ins_movi, rdi, (1 << (long)ty->bitsize) - 1);
+    emit_asm(ins_and, rdi, rax, rax);
+    //adjust for offset
+    emit_asm(ins_shl, rax, ty->bitoff, rax);
+    //copy storage address into free register
+    emit_asm(ins_movi, get_int_reg(ty, 'c'), addr, 0);
+    //mask out last bit of rcx 
+    emit_asm(ins_movi, rdi, ~(((1 << (long)ty->bitsize) - 1) << ty->bitoff), 0);
+    emit_asm(ins_and, rdi, rcx, rcx);
+    emit_asm(ins_or, rcx, rax, rax);
+    pop(rdi);
+    pop(rcx);
+}
+
+/// @brief emit: loads global var/array from label into rax
+/// @param ty 
+/// @param label 
+/// @param off 
+static void emit_gload(Type *ty, char *label, int off) {
+    SAVE;
+    if (ty->kind == KIND_ARRAY) {
+        if (off)
+            //computes gb + label + off and puts into rax
+            //emit("lea %s+%d(#rip), #rax", label, off);
+            emit_addr(ins_add, gb, label, rax);
+            emit_addr(ins_add, rax, off, rax);
+        else
+            emit("lea %s(#rip), #rax", label);
+            emit_addr(ins_add, gb, label, rax);
+        return;
+    }
+    char *inst = get_load_inst(ty);
+    //move the data from the label offset into rax
+    emit("%s %s+%d(#rip), #rax", inst, label, off);
+    maybe_emit_bitshift_load(ty);
+}
+
