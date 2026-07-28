@@ -7,39 +7,48 @@
 //   0xC0-0xFF: stack (64 bytes, grows downward from 0xFF)
 
 /*
-    Simple two-pass assembler for the project's EX_ISA.
+    Simple two-pass assembler for the project's EX_ISA. all emitted C code should compile into this format.
 
     Usage: assembler-EX_ISA <input.asm> <output.txt>
 
     Assembly syntax (whitespace and commas separate tokens):
       - Labels: `label:` at start of a line
       - Comments: start with `;`, `//`, or `#`
-      - Registers: R1 .. R14 (case-insensitive) or numeric 0..14 with R15 as TMP and R0 as zero register
+      - Registers: R1 .. R13 (case-insensitive) or numeric 0..13 with R14 as TMP, R15 as PC, and R0 as zero register
+      ; Assembly formatting instructions:
+      - Use .text for instructions and instruction labels.
+      - Use .data for data directives and data labels.
+      - Labels end with ':' and may appear on their own line.
+      - Tokens are separated by whitespace and/or commas.
+      - Comments may start with ';', '//' or '#'.
+      - Registers are R1..R13 (case-insensitive).
+      - Control-flow labels (JMP/JNZ/JLT label form) must be .text labels.
+      - Memory-address labels (STR/LDR label form) must be .data labels.
 
     Instruction formats implemented :
 
-      STR Rr, Rb, soff   -> 0001 raaa rbbb soff    (store RF[ra] -> D[RF[rb] + soff]), pseudo-ins variant accepts -8..+7 word offset
-      LDR Rr, Rb, soff   -> 0010 raaa rbbb soff    (load D[RF[rb] + soff] -> RF[ra]), pseudo-ins variant accepts -8..+7 word offset
+      STR rA, rB/LABEL, soff (store RF[rA] -> D[RF[rB] + soff]) -> 0001 raaa rbbb soff  pseudo-ins variant accepts -8..+7 word offset
+      LDR rA, rB/LABEL, soff (load D[RF[rB] + soff] -> RF[rA])  -> 0010 raaa rbbb soff  pseudo-ins variant accepts -8..+7 word offset
 
-      ADD rA, rB, rC     -> 0011 raaa rbbb rccc
-      SUB rA, rB, rC     -> 0100 raaa rbbb rccc
-      HLT                -> 0101 0000 0000 0000
+      ADD rA, rB, rC (rA = rB + rC)     -> 0011 raaa rbbb rccc
+      SUB rA, rB, rC (rA = rB - rC)     -> 0100 raaa rbbb rccc
+      HLT                               -> 0101 0000 0000 0000
 
-      MOVI rA, rB, hex   -> 0110 raaa dddddddd     (ORs the immediate value into the selected register, using pseudoins for >8 bits)
-      OR  rA, rB, rC     -> 0111 raaa rbbb rccc
-      AND rA, rB, rC     -> 1000 raaa rbbb rccc
+      MOVI rA, rB, hex (rA = rB | hex)  -> 0110 raaa dddddddd     (ORs the immediate value into the selected register, using pseudoins for >8 bits)
+      OR  rA, rB, rC   (rA = rB | rC)   -> 0111 raaa rbbb rccc
+      AND rA, rB, rC   (rA = rB & rC)   -> 1000 raaa rbbb rccc
 
-      JMP addr           -> 1001 0000 bbbbbbbb    (absolute 8-bit instruction addr)
-      JNZ addr, r        -> 1010 bbbbbbbb rrrr    (absolute addr, test reg)
-      JLT rA, rB, offset -> 1011 raaa rbbb bbbb    (4-bit signed offset relative to next instr)
+      JMP addr/LABEL   (PC = addr)      -> 1001 0000 bbbbbbbb    (absolute 8-bit instruction addr)
+      JNZ addr/LABEL, r (PC = addr if r != 0)  -> 1010 bbbbbbbb rrrr    (absolute addr, test reg)
+      JLT rA, rB, offset (PC = PC + offset if rA < rB) -> 1011 raaa rbbb bbbb    (4-bit signed offset relative to next instr)
 
-      SHL rA, rB, rC     -> 1100 raaa shft rccc     (added instructions for extra ALU ops)
-      MULT rA, rB, rC    -> 1101 raaa rbbb rccc    
-      SHR rA, rB, rC     -> 0000 raaa shft rccc
+      SHL rA, rB, rC   (rA = rB << rC)  -> 1100 raaa shft rccc     (added instructions for extra ALU ops)
+      MULT rA, rB, rC  (rA = rB * rC)   -> 1101 raaa rbbb rccc    
+      SHR rA, rB, rC   (rA = rB >> rC)  -> 0000 raaa shft rccc
 
-      NOP                -> 1000 0000 0000 0000   (AND R0 with R0 into R0, effectively a NOP)
-      MOV rA, rB         -> 1000 raaa rbbb rccc    (AND RA with RA into RB, effectively moving) 
-      XOR rA, rB, rC     -> pseudo-ins
+      NOP                               -> 1000 0000 0000 0000   (AND R0 with R0 into R0, effectively a NOP)
+      MOV rA, rB       (rA = rB)  -> 1000 raaa rbbb rccc    (AND RA with RA into RB, effectively moving) 
+      XOR rA, rB, rC   (rA = rB ^ rC)  -> pseudo-ins
 
 
     The assembler supports labels for addresses and computes relative offsets
@@ -64,10 +73,12 @@
 #define ins_mult 0xD
 
 //dedicated registers for stack and frame pointers
-#define tmp 14  //temp register for extended c interpretation
-#define sp 13   //stack pointer register
-#define fp 12   //frame pointer register
-#define gb 11   //global base register
+#define pc 15       //program counter register
+#define asm_tmp 14  //temp register for assembly to machine code interpretation
+#define tmp 13      //temp register for extended c interpretation
+#define sp 12       //stack pointer register
+#define fp 11       //frame pointer register
+#define gb 10       //global base register
 #define zero 0
 
 //x86 registers hardcoded to match EX_ISA registers
@@ -213,6 +224,12 @@ static void emit_nostack(char *fmt, ...) {
     fprintf(outputfp, "\n");
 }
 
+/// @brief overload: special case for store/load with labels
+/// @param op 
+/// @param a 
+static void emit_asm(int op, int a, string label, int off) {
+
+}
 
 /// @brief overload: emits an assembly instruction bypassing the emitf format
 /// @param op 
@@ -400,28 +417,29 @@ static void pop(char *reg) {
 /// @return 
 static int push_struct(int size) {
     SAVE;
-    int aligned = align(size, 8);
-    const int copy_src = 11;
-    const int copy_dst = 10;
-    const int copy_val = 9;
 
-    // Reserve stack space for the struct payload.
-    emit_asm(ins_movi, tmp, aligned, 0);
+    /*
+     * The EX_ISA backend is word-addressed (16-bit words), so reserve
+     * enough space for the struct rounded up to the nearest word and keep
+     * one slot for the preserved rcx value.
+     */
+    int aligned = align(size, 2);
+    int words = aligned / 2;
+
+    emit_asm(ins_movi, tmp, words + 1);
     emit_asm(ins_sub, sp, tmp, sp);
+    emit_asm(ins_str, rcx, sp, 0);
 
-    // copy_src = rax, copy_dst = sp
-    emit_asm(ins_and, rax, rax, copy_src);
-    emit_asm(ins_and, sp, sp, copy_dst);
-    emit_asm(ins_movi, tmp, 1, 0);
-
-    // Byte/word-wise linear copy using register-indirect load/store.
-    for (int i = 0; i < size; i++) {
-        emit_asm(ins_ldr, copy_val, copy_src, 0);
-        emit_asm(ins_str, copy_val, copy_dst, 0);
-        emit_asm(ins_add, copy_src, tmp, copy_src);
-        emit_asm(ins_add, copy_dst, tmp, copy_dst);
+    /* Copy the source struct pointer from rax into rcx and then copy the
+     * struct contents to the new stack frame one word at a time. */
+    emit_asm(ins_add, rcx, rax, zero);
+    for (int i = 0; i < words; i++) {
+        emit_asm(ins_ldr, tmp, rcx, i);
+        emit_asm(ins_str, tmp, sp, i + 1);
     }
-    stackpos += aligned;
+
+    emit_asm(ins_ldr, rcx, sp, 0);
+    stackpos += words + 1;
     return aligned;
 }
 
@@ -472,6 +490,8 @@ static void maybe_emit_bitshift_save(Type *ty, char *addr) {
     pop(rcx);
 }
 
+// -- 7/27/26 start --
+
 /// @brief emit: loads global var/array from label into rax
 /// @param ty 
 /// @param label 
@@ -485,7 +505,8 @@ static void emit_gload(Type *ty, char *label, int off) {
             emit_addr(ins_add, gb, label, rax);
             emit_addr(ins_add, rax, off, rax);
         else
-            emit("lea %s(#rip), #rax", label);
+            //otherwise, just compute gb + label and put into rax
+            //emit("lea %s(#rip), #rax", label);
             emit_addr(ins_add, gb, label, rax);
         return;
     }
