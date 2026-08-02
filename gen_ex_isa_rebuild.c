@@ -7,54 +7,76 @@
 //   0xC0-0xFF: stack (64 bytes, grows downward from 0xFF)
 
 /*
-    Simple two-pass assembler for the project's EX_ISA. all emitted C code should compile into this format.
+    Simple two-pass assembler for the project's EX_ISA.
 
     Usage: assembler-EX_ISA <input.asm> <output.txt>
 
     Assembly syntax (whitespace and commas separate tokens):
-      - Labels: `label:` at start of a line
-      - Comments: start with `;`, `//`, or `#`
-      - Registers: R1 .. R13 (case-insensitive) or numeric 0..13 with R14 as TMP, R15 as PC, and R0 as zero register
-      ; Assembly formatting instructions:
+
+    - Registers: R0 .. R15 (case-insensitive) or numeric 0..15. R14 is TMP, R15 is PC, and R0 is zero.
+      -- Assembly formatting instructions --
       - Use .text for instructions and instruction labels.
       - Use .data for data directives and data labels.
       - Labels end with ':' and may appear on their own line.
       - Tokens are separated by whitespace and/or commas.
       - Comments may start with ';', '//' or '#'.
-      - Registers are R1..R13 (case-insensitive).
-      - Control-flow labels (JMP/JNZ/JLT label form) must be .text labels.
+    - Registers are R0..R15 (case-insensitive).
+    - Control-flow labels (JMP/JLT label form) must be .text labels.
       - Memory-address labels (STR/LDR label form) must be .data labels.
 
     Instruction formats implemented :
 
-      STR rA, rB/LABEL, soff (store RF[rA] -> D[RF[rB] + soff]) -> 0001 raaa rbbb soff  pseudo-ins variant accepts -8..+7 word offset
-      LDR rA, rB/LABEL, soff (load D[RF[rB] + soff] -> RF[rA])  -> 0010 raaa rbbb soff  pseudo-ins variant accepts -8..+7 word offset
+      STR rA, rB/LABEL, soff (store RF[rA] -> D[RF[rB] + soff])
+          -> 0001 raaa rbbb soff  pseudo-ins variant accepts -8..+7 word offset
+      LDR rA, rB/LABEL, soff (load D[RF[rB] + soff] -> RF[rA])
+          -> 0010 raaa rbbb soff  pseudo-ins variant accepts -8..+7 word offset
 
-      ADD rA, rB, rC (rA = rB + rC)     -> 0011 raaa rbbb rccc
-      SUB rA, rB, rC (rA = rB - rC)     -> 0100 raaa rbbb rccc
-      HLT                               -> 0101 0000 0000 0000
+      ADD rA, rB, rC (rA = rB + rC)
+          -> 0011 raaa rbbb rccc
+      SUB rA, rB, rC (rA = rB - rC)
+          -> 0100 raaa rbbb rccc
+      HLT                              
+          -> 0101 0000 0000 0000
 
-      MOVI rA, rB, hex (rA = rB | hex)  -> 0110 raaa dddddddd     (ORs the immediate value into the selected register, using pseudoins for >8 bits)
-      OR  rA, rB, rC   (rA = rB | rC)   -> 0111 raaa rbbb rccc
-      AND rA, rB, rC   (rA = rB & rC)   -> 1000 raaa rbbb rccc
+    MOVI rA, imm8_or_label (rA = rA | imm)
+          -> 0110 raaa dddddddd     (ORs the immediate value into the selected register, using pseudoins for >8 bits)
+             can load a label from either iram or dram.
+      OR  rA, rB, rC   (rA = rB | rC)
+          -> 0111 raaa rbbb rccc
+      AND rA, rB, rC   (rA = rB & rC)
+          -> 1000 raaa rbbb rccc
 
-      JMP addr/LABEL   (PC = addr)      -> 1001 0000 bbbbbbbb    (absolute 8-bit instruction addr)
-      JNZ addr/LABEL, r (PC = addr if r != 0)  -> 1010 bbbbbbbb rrrr    (absolute addr, test reg)
-      JLT rA, rB, offset (PC = PC + offset if rA < rB) -> 1011 raaa rbbb bbbb    (4-bit signed offset relative to next instr)
+      JMP offset/LABEL (PC = PC + soff12)
+          -> 1001 bbbb bbbb bbbb  (signed 12-bit PC-relative offset)
+      JMP rA (optional pseudo-form: PC = RF[rA])
+          -> copies the register value into the PC register
+      JNZ rA, rB, soff4 (PC = RF[rB] + soff4 if RF[rA] != 0)
+          -> 1010 raaa rbbb bbbb
+      JLT rA, rB, offset (PC = PC + offset if rA < rB)
+          -> 1011 raaa rbbb bbbb    (4-bit signed offset relative to next instr)
 
-      SHL rA, rB, rC   (rA = rB << rC)  -> 1100 raaa shft rccc     (added instructions for extra ALU ops)
-      MULT rA, rB, rC  (rA = rB * rC)   -> 1101 raaa rbbb rccc    
-      SHR rA, rB, rC   (rA = rB >> rC)  -> 0000 raaa shft rccc
+      SHL rA, rB, rC   (rA = rB << rC)
+          -> 1100 raaa shft rccc     (added instructions for extra ALU ops)
+      MULT rA, rB, rC  (rA = rB * rC)
+          -> 1101 raaa rbbb rccc    
+      SHR rA, rB, rC   (rA = rB >> rC)
+          -> 0000 raaa shft rccc
 
-      NOP                               -> 1000 0000 0000 0000   (AND R0 with R0 into R0, effectively a NOP)
-      MOV rA, rB       (rA = rB)  -> 1000 raaa rbbb rccc    (AND RA with RA into RB, effectively moving) 
-      XOR rA, rB, rC   (rA = rB ^ rC)  -> pseudo-ins
+      NOP                         
+          -> 1000 0000 0000 0000   (AND R0 with R0 into R0, effectively a NOP)
+      MOV rA, rB       (rA = rB)
+          -> 1000 raaa rbbb rccc    (AND RA with RA into RB, effectively moving) 
+      XOR rA, rB, rC   (rA = rB ^ rC)
+          -> pseudo-ins
 
 
-    The assembler supports labels for addresses and computes relative offsets
-    for `JLT` as: offset = target_address - (current_address + 1). Offset must fit
-    in signed 4-bit (-8..+7).
+    The assembler supports labels for PC-relative control flow and computes relative offsets
+    as: offset = target_address - (current_address + 1).
+    - JMP label uses a signed 12-bit offset (-2048..+2047).
+    - JLT label uses a signed 4-bit offset (-8..+7).
 */
+
+
 
 //DEFINES: aliases for all instructions in the ISA
 #define ins_shr 0x0
@@ -74,8 +96,8 @@
 
 //dedicated registers for stack and frame pointers
 #define pc 15       //program counter register
-#define asm_tmp 14  //temp register for assembly to machine code interpretation
-#define tmp 13      //temp register for extended c interpretation
+#define asm_tmp 14  //temp register for assembly to machine code translation
+#define tmp 13      //temp register for extended c translation
 #define sp 12       //stack pointer register
 #define fp 11       //frame pointer register
 #define gb 10       //global base register
@@ -98,7 +120,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
+//#include <unistd.h>
 #include "8cc.h"
 
 bool dumpstack = false;
@@ -110,7 +132,7 @@ static char *SREGS[] = {"dil", "sil", "dl", "cl", "r8b", "r9b"};
 static char *MREGS[] = {"edi", "esi", "edx", "ecx", "r8d", "r9d"};
 //tab length
 static int TAB = 8;
-//empty vectore for compiled functions
+//empty vector for compiled functions
 static Vector *functions = &EMPTY_VECTOR;
 //location of stack
 static int stackpos;
@@ -224,12 +246,6 @@ static void emit_nostack(char *fmt, ...) {
     fprintf(outputfp, "\n");
 }
 
-/// @brief overload: special case for store/load with labels
-/// @param op 
-/// @param a 
-static void emit_asm(int op, int a, string label, int off) {
-
-}
 
 /// @brief overload: emits an assembly instruction bypassing the emitf format
 /// @param op 
@@ -326,7 +342,7 @@ static void emit_asm(int op, int a, int b, int c) {
 /// @param ty 
 /// @param r 
 /// @return 
-static char *get_int_reg(Type *ty, char r) {
+static int get_int_reg(Type *ty, char r) {
     //these registers aren't that important since there's only one length
     assert(r == 'a' || r == 'c');
     switch (ty->size) {
@@ -340,7 +356,7 @@ static char *get_int_reg(Type *ty, char r) {
 /// @brief select the appropriate mov command by bit length (just mov)
 /// @param ty 
 /// @return 
-static char *get_load_inst(Type *ty) {
+static int get_load_inst(Type *ty) {
     switch (ty->size) {
     case 16: return ins_movi;
     default:
@@ -362,7 +378,7 @@ static int align(int n, int m) {
 static void push_xmm(int reg) {
     SAVE;
     //subtract 1 from stack pointer (word address in direct memory mapping)
-    emit_asm(ins_movi, tmp, 1, 0);
+    emit_asm(ins_movi, tmp, 1);
     emit_asm(ins_sub, sp, tmp, sp); //PROBLEM: sp only contains a register value, isa can only write direct values
                                          //SOLUTION: make str and ldr pull addresses from registers instead of
                                          // direct memory mapping, expanding address space to 16 bit 
@@ -381,7 +397,7 @@ static void pop_xmm(int reg) {
     emit_asm(ins_ldr, reg, sp, 0);
     //add 1 to stack pointer
     //emit("movsd (#rsp), #xmm%d", reg);
-    emit_asm(ins_movi, tmp, 1, 0);
+    emit_asm(ins_movi, tmp, 1);
     emit_asm(ins_add, sp, tmp, sp);
     stackpos -= 1;
     assert(stackpos >= 0);
@@ -391,7 +407,7 @@ static void pop_xmm(int reg) {
 
 /// @brief potato | emits: push a register to the global stack, update sp
 /// @param reg 
-static void push(char *reg) {
+static void push(int reg) {
     SAVE;
     emit("movi %d, %d", tmp, 1);
     emit("sub %d, %d, %d", sp, tmp, sp);
@@ -401,7 +417,7 @@ static void push(char *reg) {
 
 /// @brief potato | emits: pop a register from the global stack, update sp
 /// @param reg 
-static void pop(char *reg) {
+static void pop(int reg) {
     SAVE;
     emit("ldr %d, %d", reg, sp);
     emit("movi %d, %d", tmp, 1);
@@ -450,12 +466,13 @@ static void maybe_emit_bitshift_load(Type *ty) {
     if (ty->bitsize <= 0)
         return;
     //emit("shr $%d, #rax", ty->bitoff);
-    emit_asm(ins_shr, rax, ty->bitoff, rax);
+    emit_asm(ins_movi, asm_tmp, ty->bitoff);
+    emit_asm(ins_shr, rax, asm_tmp, rax);
     push(rcx);
     emit_asm(ins_movi, rcx, (1 << (long)ty->bitsize) - 1);
     //emit("mov $0x%lx, #rcx", (1 << (long)ty->bitsize) - 1);
     //emit("and #rcx, #rax");
-    emit_ins(ins_and, rcx, rax, rax); //clear rcx
+    emit_asm(ins_and, rax, rcx, rax);
     pop(rcx);
 }
 
@@ -464,7 +481,7 @@ static void maybe_emit_bitshift_load(Type *ty) {
 /// @brief potato | emit: merges last bit of rcx with rax, copies addr into free register
 /// @param ty 
 /// @param addr 
-static void maybe_emit_bitshift_save(Type *ty, char *addr) {
+static void maybe_emit_bitshift_save(Type *ty, int addr) {
     SAVE;
     if (ty->bitsize <= 0)
         return;
@@ -479,11 +496,12 @@ static void maybe_emit_bitshift_save(Type *ty, char *addr) {
     emit_asm(ins_movi, rdi, (1 << (long)ty->bitsize) - 1);
     emit_asm(ins_and, rdi, rax, rax);
     //adjust for offset
-    emit_asm(ins_shl, rax, ty->bitoff, rax);
+    emit_asm(ins_movi, asm_tmp, ty->bitoff);
+    emit_asm(ins_shl, rax, asm_tmp, rax);
     //copy storage address into free register
-    emit_asm(ins_movi, get_int_reg(ty, 'c'), addr, 0);
+    emit_asm(ins_movi, get_int_reg(ty, 'c'), addr);
     //mask out last bit of rcx 
-    emit_asm(ins_movi, rdi, ~(((1 << (long)ty->bitsize) - 1) << ty->bitoff), 0);
+    emit_asm(ins_movi, rdi, ~(((1 << (long)ty->bitsize) - 1) << ty->bitoff) & 0xFFFF);
     emit_asm(ins_and, rdi, rcx, rcx);
     emit_asm(ins_or, rcx, rax, rax);
     pop(rdi);
@@ -491,6 +509,29 @@ static void maybe_emit_bitshift_save(Type *ty, char *addr) {
 }
 
 // -- 7/27/26 start --
+// -- 7/28/26 start --
+
+/*
+TODO: global variables require Position Independent Code (PIC)
+to function. the current ISA has JMP and JNZ requiring absolute
+addresses, not relative addresses, to function. gload() will require:
+a) labels to be resolved into an absolute offset plus a PC-relative value.
+(ie. how far from the current instruction does the PC need to move?)
+then, jumps can be made by adding or subtracting the value from the PC.
+this causes all programs to be dependent ONLY on the PC, and not on jumps to
+labels marked at absolute locations in the code.
+*/
+
+/*
+FIX: JMP and JNZ now use relative offsets, labels, or register data
+to determine jumps. with this, the entire ISA now solely supports relative
+addessing and is prepared for PIC conversion.
+*/
+
+/*
+loads a global variable from a global buffer address + label offset into rax.
+if the variable is an array, it will load the address of the array into rax.
+*/
 
 /// @brief emit: loads global var/array from label into rax
 /// @param ty 
@@ -498,21 +539,24 @@ static void maybe_emit_bitshift_save(Type *ty, char *addr) {
 /// @param off 
 static void emit_gload(Type *ty, char *label, int off) {
     SAVE;
+    // Build an effective address in TMP using only assembler-supported forms.
+    emit("movi %d, %s", tmp, label);
+    if (off) {
+        emit_asm(ins_movi, asm_tmp, off);
+        emit_asm(ins_add, tmp, asm_tmp, tmp);
+    }
+    emit_asm(ins_add, gb, tmp, tmp);
+
     if (ty->kind == KIND_ARRAY) {
-        if (off)
-            //computes gb + label + off and puts into rax
-            //emit("lea %s+%d(#rip), #rax", label, off);
-            emit_addr(ins_add, gb, label, rax);
-            emit_addr(ins_add, rax, off, rax);
-        else
-            //otherwise, just compute gb + label and put into rax
-            //emit("lea %s(#rip), #rax", label);
-            emit_addr(ins_add, gb, label, rax);
+        emit_asm(ins_add, tmp, zero, rax);
         return;
     }
-    char *inst = get_load_inst(ty);
-    //move the data from the label offset into rax
-    emit("%s %s+%d(#rip), #rax", inst, label, off);
+    int inst = get_load_inst(ty);
+    if (inst != ins_movi)
+        error("Unsupported load instruction opcode: %d", inst);
+
+    // Scalar globals: load memory at effective address TMP into RAX.
+    emit_asm(ins_ldr, rax, tmp, 0);
     maybe_emit_bitshift_load(ty);
 }
 
