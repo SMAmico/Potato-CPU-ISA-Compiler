@@ -55,12 +55,12 @@
       JLT rA, rB, offset (PC = PC + offset if rA < rB)
           -> 1011 raaa rbbb bbbb    (4-bit signed offset relative to next instr)
 
-      SHL rA, rB, rC   (rA = rB << rC)
-          -> 1100 raaa shft rccc     (added instructions for extra ALU ops)
+      SHL rA, rB, shft (rA = rB << shft)
+          -> 1100 raaa shft rccc     (shft is an unsigned 4-bit immediate)
       MULT rA, rB, rC  (rA = rB * rC)
           -> 1101 raaa rbbb rccc    
-      SHR rA, rB, rC   (rA = rB >> rC)
-          -> 0000 raaa shft rccc
+      SHR rA, rB, shft (rA = rB >> shft)
+          -> 0000 raaa shft rccc     (shft is an unsigned 4-bit immediate)
 
       NOP                         
           -> 1000 0000 0000 0000   (AND R0 with R0 into R0, effectively a NOP)
@@ -285,7 +285,7 @@ static void emit_asm(int op, int a, int b) {
         emit("jmp %d", a);
         return;
     case ins_jnz:
-        emit("jnz %d, %d", a, b);
+        emit("jnz %d, %d, %d", a, b, 0);
         return;
     default:
         error("Unknown EX_ISA opcode: %d", op);
@@ -411,7 +411,7 @@ static void push(int reg) {
     SAVE;
     emit("movi %d, %d", tmp, 1);
     emit("sub %d, %d, %d", sp, tmp, sp);
-    emit("str %d, %d", reg, sp);
+    emit("str %d, %d, %d", reg, sp, 0);
     stackpos += 1; //remember, each instruction is 16 bits, so only 1 word
 }
 
@@ -419,7 +419,7 @@ static void push(int reg) {
 /// @param reg 
 static void pop(int reg) {
     SAVE;
-    emit("ldr %d, %d", reg, sp);
+    emit("ldr %d, %d, %d", reg, sp, 0);
     emit("movi %d, %d", tmp, 1);
     emit("add %d, %d, %d", sp, tmp, sp);
     stackpos -= 1;  //remember, each instruction is 16 bits, so only 1 word
@@ -466,8 +466,7 @@ static void maybe_emit_bitshift_load(Type *ty) {
     if (ty->bitsize <= 0)
         return;
     //emit("shr $%d, #rax", ty->bitoff);
-    emit_asm(ins_movi, asm_tmp, ty->bitoff);
-    emit_asm(ins_shr, rax, asm_tmp, rax);
+    emit_asm(ins_shr, rax, rax, ty->bitoff);
     push(rcx);
     emit_asm(ins_movi, rcx, (1 << (long)ty->bitsize) - 1);
     //emit("mov $0x%lx, #rcx", (1 << (long)ty->bitsize) - 1);
@@ -496,8 +495,7 @@ static void maybe_emit_bitshift_save(Type *ty, int addr) {
     emit_asm(ins_movi, rdi, (1 << (long)ty->bitsize) - 1);
     emit_asm(ins_and, rdi, rax, rax);
     //adjust for offset
-    emit_asm(ins_movi, asm_tmp, ty->bitoff);
-    emit_asm(ins_shl, rax, asm_tmp, rax);
+    emit_asm(ins_shl, rax, rax, ty->bitoff);
     //copy storage address into free register
     emit_asm(ins_movi, get_int_reg(ty, 'c'), addr);
     //mask out last bit of rcx 

@@ -118,10 +118,8 @@ static void parse_f_arg(char *s) {
 static void parse_m_arg(char *s) {
     if (!strcmp(s, "64")) {
         target_arch = "x86-64";
-    } else if (!strcmp(s, "ex-isa")) {
-        target_arch = "ex-isa";
     } else {
-        error("Unknown -m target: %s (supported: 64, ex-isa)", s);
+        error("Unknown -m target: %s (supported: 64)", s);
     }
 }
 
