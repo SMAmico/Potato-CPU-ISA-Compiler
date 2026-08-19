@@ -27,9 +27,9 @@
     Instruction formats implemented :
 
       STR rA, rB/LABEL, soff (store RF[rA] -> D[RF[rB] + soff])
-          -> 0001 raaa rbbb soff  pseudo-ins variant accepts -8..+7 word offset
+          -> 0001 raaa rbbb soff  pseudo-ins variant accepts 16-bit word offset using pseudoinstruction
       LDR rA, rB/LABEL, soff (load D[RF[rB] + soff] -> RF[rA])
-          -> 0010 raaa rbbb soff  pseudo-ins variant accepts -8..+7 word offset
+          -> 0010 raaa rbbb soff  pseudo-ins variant accepts 16-bit word offset using pseudoinstruction
 
       ADD rA, rB, rC (rA = rB + rC)
           -> 0011 raaa rbbb rccc
@@ -93,10 +93,13 @@
 #define ins_jlt 0xB
 #define ins_shl 0xC
 #define ins_mult 0xD
+#define ins_nop 0xE
+#define ins_mov 0xF
+#define ins_xor 0x10
 
 //dedicated registers for stack and frame pointers
 #define pc 15       //program counter register
-#define asm_tmp 14  //temp register for assembly to machine code translation
+#define asm_tmp 14  //temp register exclusively for assembly to machine code translation. don't use
 #define tmp 13      //temp register for extended c translation
 #define sp 12       //stack pointer register
 #define fp 11       //frame pointer register
@@ -255,6 +258,9 @@ static void emit_asm(int op, int a) {
     case ins_hlt:
         emit("hlt");
         return;
+    case ins_nop:
+        emit("nop");
+        return;
     case ins_jmp:
         emit("jmp %d", a);
         return;
@@ -280,6 +286,9 @@ static void emit_asm(int op, int a, int b) {
         return;
     case ins_movi:
         emit("movi %d, %d", a, b);
+        return;
+    case ins_mov:
+        emit("mov %d, %d", a, b);
         return;
     case ins_jmp:
         emit("jmp %d", a);
@@ -322,6 +331,9 @@ static void emit_asm(int op, int a, int b, int c) {
         return;
     case ins_and:
         emit("and %d, %d, %d", a, b, c);
+        return;
+    case ins_xor:
+        emit("xor %d, %d, %d", a, b, c);
         return;
     case ins_jlt:
         emit("jlt %d, %d, %d", a, b, c);
@@ -531,30 +543,140 @@ loads a global variable from a global buffer address + label offset into rax.
 if the variable is an array, it will load the address of the array into rax.
 */
 
-/// @brief emit: loads global var/array from label into rax
+/// @brief potato | emit: loads global var/array from label into rax
 /// @param ty 
 /// @param label 
 /// @param off 
 static void emit_gload(Type *ty, char *label, int off) {
     SAVE;
-    // Build an effective address in TMP using only assembler-supported forms.
-    emit("movi %d, %s", tmp, label);
-    if (off) {
-        emit_asm(ins_movi, asm_tmp, off);
-        emit_asm(ins_add, tmp, asm_tmp, tmp);
-    }
-    emit_asm(ins_add, gb, tmp, tmp);
-
     if (ty->kind == KIND_ARRAY) {
-        emit_asm(ins_add, tmp, zero, rax);
+        // MOVI ORs its immediate into the destination, so clear rax before
+        // materializing the array's data-label address.
+        emit_asm(ins_mov, rax, zero);
+        emit("movi %d, %s", rax, label);
+        if (off) {
+            // The assembler may use TMP to expand a 16-bit label address;
+            // clear it before loading the array-element displacement.
+            emit_asm(ins_mov, tmp, zero);
+            // Put the requested byte/word displacement in TMP.
+            emit_asm(ins_movi, tmp, off);
+            // Form label + off so rax holds the address of the array element.
+            emit_asm(ins_add, rax, rax, tmp);
+        }
         return;
     }
-    int inst = get_load_inst(ty);
-    if (inst != ins_movi)
-        error("Unsupported load instruction opcode: %d", inst);
 
-    // Scalar globals: load memory at effective address TMP into RAX.
-    emit_asm(ins_ldr, rax, tmp, 0);
+    // Load the scalar value at data label + off directly into rax. The
+    // assembler resolves the data label and expands the address load as needed.
+    emit("ldr %d, %s, %d", rax, label, off);
+    // Extract the requested bit-field after its containing word is loaded.
     maybe_emit_bitshift_load(ty);
+
 }
 
+// -- 8/18/26 start --
+
+/*
+ISA note: our isa only works with 16-bit registers,
+so there's no need to move char, short, or int data from different-length registers based on type.
+the function determines moves based on the sign as well, but since the register lengths aren't being
+extended in any move, we can ignore this as both input and output will be 16 bits.
+in this stage, this function isn't needed, but the structure will be kept so that the original
+handling can be observed if we want to increase/variate register sizes.
+*/
+
+/// @brief potato | emit: converts data in e/rax to int based on type
+/// @param ty 
+static void emit_intcast(Type *ty) {
+    switch(ty->kind) {
+    case KIND_BOOL:
+    case KIND_CHAR:
+        ty->usig ? emit_asm(ins_mov, rax, rax) : emit_asm(ins_mov, rax, rax);
+        return;
+    case KIND_SHORT:
+        ty->usig ? emit_asm(ins_mov, rax, rax) : emit_asm(ins_mov, rax, rax);
+        return;
+    case KIND_INT:
+        ty->usig ? emit_asm(ins_mov, rax, rax) : emit_asm(ins_mov, rax, rax);
+        return;
+    //no support in isa
+    case KIND_LONG:
+    case KIND_LLONG:
+        return;
+    }
+}
+
+/*
+once again, there is no support for floating point math, so this function
+only exists to demonstrate the code's previous handling strategy.
+*/
+
+/// @brief potato | emit: forcibly trims float and double in eax to int
+/// @param ty 
+static void emit_toint(Type *ty) {
+    SAVE;
+    if (ty->kind == KIND_FLOAT)
+        emit_asm(ins_mov, rax, rax);
+    else if (ty->kind == KIND_DOUBLE)
+        emit_asm(ins_mov, rax, rax);
+}
+
+/// @brief potato | emit: loads local variable (array, int, float, double) from base+offset into rax
+/// @param ty 
+/// @param base 
+/// @param off 
+static void emit_lload(Type *ty, int base, int off) {
+    SAVE;
+    if (ty->kind == KIND_ARRAY) {
+        // Copy the local frame or pointer base into rax; arrays evaluate to
+        // their address rather than loading a value from that address.
+        emit_asm(ins_mov, rax, base);
+        if (!off)
+            return;
+
+        // MOVI ORs the immediate into TMP, so we clear TMP before loading the
+        // magnitude of the array-element displacement.
+        emit_asm(ins_mov, tmp, zero);
+        emit_asm(ins_movi, tmp, off < 0 ? -off : off);
+        if (off < 0) {
+            // Subtract the negative displacement to form base + off in rax.
+            emit_asm(ins_sub, rax, rax, tmp);
+        } else {
+            // Add the positive displacement to form base + off in rax.
+            emit_asm(ins_add, rax, rax, tmp);
+        }
+        return;
+    }
+
+    // LDR's assembler pseudo-instruction accepts the full signed 16-bit
+    // displacement and lowers base + off to the necessary instruction sequence.
+    emit_asm(ins_ldr, rax, base, off);
+
+    // Extract the requested bit-field after loading its containing word.
+    maybe_emit_bitshift_load(ty);
+
+}
+
+/*
+ISA note: once again, we're using the exact same register types, so converting a 
+type that contains '1' to a boolean requires alomst no effort.
+*/
+
+/// @brief potato | emit: converts rax into boolean
+/// @param ty 
+static void maybe_convert_bool(Type *ty) {
+    if (ty->kind == KIND_BOOL) {
+        //sets the test bits for RAX.
+        //if they're not equal, 
+        //emit("test #rax, #rax");
+        //emit("setne #al");
+
+        //if the value in rax is not zero, ser rax to 1. otherwise, set to 0.
+        emit_asm(ins_mov, tmp, zero); //set tmp to 0
+        emit_asm(ins_jnz, rax, tmp, 2); //jump to set rax to 1
+        emit_asm(ins_mov, rax, zero); //set rax to 0
+        emit_asm(ins_jmp, 3); //jump past end to next instruction
+        emit_asm(ins_movi, tmp, 1); //set tmp to 1
+        emit_asm(ins_mov, rax, tmp); //set rax to 1
+    }
+}
