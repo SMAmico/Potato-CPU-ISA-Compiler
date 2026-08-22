@@ -135,8 +135,9 @@ static char *SREGS[] = {"dil", "sil", "dl", "cl", "r8b", "r9b"};
 static char *MREGS[] = {"edi", "esi", "edx", "ecx", "r8d", "r9d"};
 //tab length
 static int TAB = 8;
+static Vector functions_storage;
 //empty vector for compiled functions
-static Vector *functions = &EMPTY_VECTOR;
+static Vector *functions = &functions_storage;
 //location of stack
 static int stackpos;
 //number of global variables
@@ -146,8 +147,10 @@ static int numfp;
 //output file path
 static FILE *outputfp;
 //map of compiled source files and lines
-static Map *source_files = &EMPTY_MAP;
-static Map *source_lines = &EMPTY_MAP;
+static Map source_files_storage;
+static Map source_lines_storage;
+static Map *source_files = &source_files_storage;
+static Map *source_lines = &source_lines_storage;
 //pointer to last line read
 static char *last_loc = "";
 
@@ -194,8 +197,8 @@ static char *get_caller_list() {
 
 /// @brief set the output file for the program
 /// @param fp 
-void set_output_file(FILE *fp) {
-    outputfp = fp;
+void set_output_file(FILE *outfp) {
+    outputfp = outfp;
 }
 
 /// @brief close the output file when the program is done
@@ -491,8 +494,7 @@ static void maybe_emit_bitshift_load(Type *ty) {
 
 /// @brief potato | emit: merges last bit of rcx with rax, copies addr into free register
 /// @param ty 
-/// @param addr 
-static void maybe_emit_bitshift_save(Type *ty, int addr) {
+static void maybe_emit_bitshift_save(Type *ty) {
     SAVE;
     if (ty->bitsize <= 0)
         return;
@@ -508,8 +510,6 @@ static void maybe_emit_bitshift_save(Type *ty, int addr) {
     emit_asm(ins_and, rdi, rax, rax);
     //adjust for offset
     emit_asm(ins_shl, rax, rax, ty->bitoff);
-    //copy storage address into free register
-    emit_asm(ins_movi, get_int_reg(ty, 'c'), addr);
     //mask out last bit of rcx 
     emit_asm(ins_movi, rdi, ~(((1 << (long)ty->bitsize) - 1) << ty->bitoff) & 0xFFFF);
     emit_asm(ins_and, rdi, rcx, rcx);
@@ -679,4 +679,109 @@ static void maybe_convert_bool(Type *ty) {
         emit_asm(ins_movi, tmp, 1); //set tmp to 1
         emit_asm(ins_mov, rax, tmp); //set rax to 1
     }
+}
+
+// -- 8/21/26 start --
+
+/// @brief potato | emit: saves global variable back to memory as variable
+/// @param varname 
+/// @param ty 
+/// @param off 
+static void emit_gsave(char *varname, Type *ty, int off) {
+    SAVE;
+    //assert that the type isn't an array, since arrays are pointers and can't be saved
+    assert(ty->kind != KIND_ARRAY);
+    //convert any booleans into usable variables
+    maybe_convert_bool(ty);
+    //get the appropriate register for the type
+    int reg = get_int_reg(ty, 'a');
+    if (ty->bitsize > 0) {
+        // Bit-field stores must preserve neighboring bits in the same word.
+        emit("ldr %d, %s, %d", rcx, varname, off);
+        maybe_emit_bitshift_save(ty);
+    }
+    // Store to data label + offset using EX_ISA assembler label addressing.
+    emit("str %d, %s, %d", reg, varname, off);
+}
+
+/// @brief emit: saves local variable in xmm0 to memory
+/// @param ty the type of the local variable
+/// @param off the offset from the base pointer where the local variable is stored
+static void emit_lsave(Type *ty, int off) {
+    SAVE;
+    if (ty->kind == KIND_FLOAT) {
+        // if the type is a float,
+        //emit("movss #xmm0, %d(#rbp)", off);
+        emit_asm(ins_str, rax, rbp, off);
+    } else if (ty->kind == KIND_DOUBLE) {
+        // if the type is a double,
+        //emit("movsd #xmm0, %d(#rbp)", off);
+        emit_asm(ins_str, rax, rbp, off);
+    } else {
+        //otherwise, convert booleans to usable state
+        maybe_convert_bool(ty);
+        //get appropriate register type,
+        int reg = get_int_reg(ty, 'a');
+        if (ty->bitsize > 0) {
+            // Read-modify-write for local bit-field updates.
+            emit_asm(ins_ldr, rcx, rbp, off);
+            maybe_emit_bitshift_save(ty);
+        }
+        // Store using base-register + displacement (EX_ISA-native form).
+        emit_asm(ins_str, reg, rbp, off);
+    }
+}
+
+/// @brief potato emit: dereference value from utility registers to rax addr
+/// @param ty 
+/// @param off 
+static void do_emit_assign_deref(Type *ty, int off) {
+    SAVE;
+    /*
+    (we push rcx to the stack, get a free register,
+    then store the value to the address in rax + offset,
+    then pop rcx back to the stack)
+    */
+    //emit("mov (#rsp), #rcx");
+    emit("STR %d, %d, 0", rcx, rsp);
+
+    char *reg = get_int_reg(ty, 'c');
+    if (off)
+        //emit("mov #%s, %d(#rax)", reg, off);
+        emit("STR %d, %d, %d", reg, rax, off);
+    else
+        emit("STR %d, %d, 0", reg, rax);
+    pop(rax);
+}
+
+/// @brief potato | emit: helper: push rax, deref pointer with offset 0
+/// @param var 
+static void emit_assign_deref(Node *var) {
+    SAVE;
+    push("rax");
+    emit_expr(var->operand);
+    do_emit_assign_deref(var->operand->ty->ptr, 0);
+}
+
+/// @brief emit: do arithmetic (add, sub) on two pointers
+/// @param kind 
+/// @param left 
+/// @param right 
+static void emit_pointer_arith(char kind, Node *left, Node *right) {
+    SAVE;
+    emit_expr(left);
+    push("rcx");
+    push("rax");
+    emit_expr(right);
+    int size = left->ty->ptr->size;
+    if (size > 1)
+        emit("imul $%d, #rax", size);
+    emit("mov #rax, #rcx");
+    pop("rax");
+    switch (kind) {
+    case '+': emit("add #rcx, #rax"); break;
+    case '-': emit("sub #rcx, #rax"); break;
+    default: error("invalid operator '%d'", kind);
+    }
+    pop("rcx");
 }
