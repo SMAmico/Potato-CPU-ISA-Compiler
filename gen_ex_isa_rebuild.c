@@ -763,25 +763,25 @@ static void emit_assign_deref(Node *var) {
     do_emit_assign_deref(var->operand->ty->ptr, 0);
 }
 
-/// @brief emit: do arithmetic (add, sub) on two pointers
+/// @brief potato | emit: do arithmetic (add, sub) on two pointers
 /// @param kind 
 /// @param left 
 /// @param right 
 static void emit_pointer_arith(char kind, Node *left, Node *right) {
     SAVE;
     emit_expr(left);
-    push("rcx");
-    push("rax");
+    push(rcx);
+    push(rax);
     emit_expr(right);
     int size = left->ty->ptr->size;
     if (size > 1)
         emit("imul $%d, #rax", size);
-    emit("mov #rax, #rcx");
-    pop("rax");
+    emit("MOV rax, rcx");
+    pop(rax);
     switch (kind) {
-    case '+': emit("add #rcx, #rax"); break;
-    case '-': emit("sub #rcx, #rax"); break;
+    case '+': emit("ADD rcx, rax"); break;
+    case '-': emit("SUB rcx, rax"); break;
     default: error("invalid operator '%d'", kind);
     }
-    pop("rcx");
+    pop(rcx);
 }
