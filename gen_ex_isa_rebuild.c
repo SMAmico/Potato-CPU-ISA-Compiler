@@ -6,14 +6,17 @@
 //   0x00-0xBF: global data (64 bytes)
 //   0xC0-0xFF: stack (64 bytes, grows downward from 0xFF)
 
+//this project uses the assembler below. all assembly instructions 
+//should be converted into this format.
+
 /*
     Simple two-pass assembler for the project's EX_ISA.
 
-    Usage: assembler-EX_ISA <input.asm> <output.txt>
+    Usage: assembler-EX_ISA <input.asm> <output.txt> [--mif] [--mif-out <output.mif>]
 
     Assembly syntax (whitespace and commas separate tokens):
 
-    - Registers: R0 .. R15 (case-insensitive) or numeric 0..15. R14 is TMP, R15 is PC, and R0 is zero.
+    - Registers: R0 .. R15 (case-insensitive) or numeric 0..15. R0 is fixed at zero, R14 is TMP, and R15 is PC.
       -- Assembly formatting instructions --
       - Use .text for instructions and instruction labels.
       - Use .data for data directives and data labels.
@@ -55,12 +58,22 @@
       JLT rA, rB, offset (PC = PC + offset if rA < rB)
           -> 1011 raaa rbbb bbbb    (4-bit signed offset relative to next instr)
 
+      CMP rA, rB (capture Z, N, and V from signed rA - rB)
+          -> 1110 raaa rbbb 0000
+      SETLT rD (rD = 1 if the most recent CMP was signed less-than, else 0)
+      SETEQ rD (rD = 1 if the most recent CMP was equal, else 0)
+      SETNE rD (rD = 1 if the most recent CMP was not equal, else 0)
+      SETLE rD (rD = 1 if the most recent CMP was signed less-than or equal, else 0)
+      SETGT rD (rD = 1 if the most recent CMP was signed greater-than, else 0)
+      SETGE rD (rD = 1 if the most recent CMP was signed greater-than or equal, else 0)
+          -> 1110 rddd cccc 1111    (cc: 0=LT, 1=EQ, 2=NE, 3=LE, 4=GT, 5=GE)
+
       SHL rA, rB, shft (rA = rB << shft)
           -> 1100 raaa shft rccc     (shft is an unsigned 4-bit immediate)
       MULT rA, rB, rC  (rA = rB * rC)
           -> 1101 raaa rbbb rccc    
       SHR rA, rB, shft (rA = rB >> shft)
-          -> 0000 raaa shft rccc     (shft is an unsigned 4-bit immediate)
+          -> 0000 raaa shft rccc
 
       NOP                         
           -> 1000 0000 0000 0000   (AND R0 with R0 into R0, effectively a NOP)
@@ -111,10 +124,14 @@
 #define rbx 2   //x86 base register equivalent
 #define rcx 3   //x86 counter register equivalent
 #define rdx 4   //x86 data register equivalent
-#define rsi 5   //x86 source index register equivalent
-#define rdi 6   //x86 destination index register equivalent
+#define eax 5   //x86 accumulator register equivalent (32-bit)
+#define rsi 6   //x86 source index register equivalent
+#define rdi 7   //x86 destination index register equivalent
 #define rbp fp  //x86 base pointer register equivalent
 #define rsp sp  //x86 stack pointer register equivalent
+
+#define xmm0 8  //x86 floating point register equivalent (TEMP)
+#define xmm1 9  //x86 floating point register equivalent (TEMP)
 
 // Copyright 2012 Rui Ueyama. Released under the MIT license.
 
@@ -704,7 +721,7 @@ static void emit_gsave(char *varname, Type *ty, int off) {
     emit("str %d, %s, %d", reg, varname, off);
 }
 
-/// @brief emit: saves local variable in xmm0 to memory
+/// @brief potato | emit: saves local variable in xmm0 to memory
 /// @param ty the type of the local variable
 /// @param off the offset from the base pointer where the local variable is stored
 static void emit_lsave(Type *ty, int off) {
@@ -732,7 +749,7 @@ static void emit_lsave(Type *ty, int off) {
     }
 }
 
-/// @brief potato emit: dereference value from utility registers to rax addr
+/// @brief potato | emit: dereference value from utility registers to rax addr
 /// @param ty 
 /// @param off 
 static void do_emit_assign_deref(Type *ty, int off) {
@@ -774,14 +791,225 @@ static void emit_pointer_arith(char kind, Node *left, Node *right) {
     push(rax);
     emit_expr(right);
     int size = left->ty->ptr->size;
-    if (size > 1)
-        emit("imul $%d, #rax", size);
-    emit("MOV rax, rcx");
+    if (size > 1) {
+        emit("MOVI %d, %d", tmp, size);
+        emit("MULT %d, %d, %d", rax, rax, tmp);
+    }
+    emit("MOV %d, %d, %d", rax, rax, rcx);
     pop(rax);
     switch (kind) {
-    case '+': emit("ADD rcx, rax"); break;
-    case '-': emit("SUB rcx, rax"); break;
+    case '+': emit("ADD %d, %d, %d", rcx, rax, rax); break;
+    case '-': emit("SUB %d, %d, %d", rcx, rax, rax); break;
     default: error("invalid operator '%d'", kind);
     }
     pop(rcx);
+}
+
+// -- 8/22/26 start --
+
+/// @brief potato | emit: blank out portions of memory
+/// @param start 
+/// @param end 
+static void emit_zero_filler(int start, int end) {
+    SAVE;
+    for (; start <= end - 4; start += 4)
+        //emit("movl $0, %d(#rbp)", start);
+        emit("STR %d, %d, %d", zero, rbp, start);
+    /*
+    we don't have a memory unit apart from 16 bit, so all fills
+    and variables will operate in 16 bit units regardless.
+    */
+
+    //for (; start < end; start++)
+    //    emit("movb $0, %d(#rbp)", start);
+}
+
+/// @brief potato | check the localvar initialized
+/// @param node 
+static void ensure_lvar_init(Node *node) {
+    SAVE;
+    assert(node->kind == AST_LVAR);
+    if (node->lvarinit)
+        emit_decl_init(node->lvarinit, node->loff, node->ty->size);
+    node->lvarinit = NULL;
+}
+
+/// @brief potato | create a reference to a struct based on its type, or deref
+/// @param struc 
+/// @param field 
+/// @param off 
+static void emit_assign_struct_ref(Node *struc, Type *field, int off) {
+    SAVE;
+    switch (struc->kind) {
+    case AST_LVAR:
+        ensure_lvar_init(struc);
+        emit_lsave(field, struc->loff + field->offset + off);
+        break;
+    case AST_GVAR:
+        emit_gsave(struc->glabel, field, field->offset + off);
+        break;
+    case AST_STRUCT_REF:
+        emit_assign_struct_ref(struc->struc, field, off + struc->ty->offset);
+        break;
+    case AST_DEREF:
+        push(rax);
+        emit_expr(struc->operand);
+        do_emit_assign_deref(field, field->offset + off);
+        break;
+    default:
+        error("internal error: %s", node2s(struc));
+    }
+}
+
+/// @brief potato | loads a struct reference from memory based on type
+/// @param struc 
+/// @param field 
+/// @param off 
+static void emit_load_struct_ref(Node *struc, Type *field, int off) {
+    SAVE;
+    switch (struc->kind) {
+    case AST_LVAR:
+        ensure_lvar_init(struc);
+        emit_lload(field, rbp, struc->loff + field->offset + off);
+        break;
+    case AST_GVAR:
+        emit_gload(field, struc->glabel, field->offset + off);
+        break;
+    case AST_STRUCT_REF:
+        emit_load_struct_ref(struc->struc, field, struc->ty->offset + off);
+        break;
+    case AST_DEREF:
+        emit_expr(struc->operand);
+        emit_lload(field, rax, field->offset + off);
+        break;
+    default:
+        error("internal error: %s", node2s(struc));
+    }
+}
+
+/// @brief potato | stores a struct, lvar, gvar or deref based on type
+/// @param var 
+static void emit_store(Node *var) {
+    SAVE;
+    switch (var->kind) {
+    case AST_DEREF: emit_assign_deref(var); break;
+    case AST_STRUCT_REF: emit_assign_struct_ref(var->struc, var->ty, 0); break;
+    case AST_LVAR:
+        ensure_lvar_init(var);
+        emit_lsave(var->ty, var->loff);
+        break;
+    case AST_GVAR: emit_gsave(var->glabel, var->ty, 0); break;
+    default: error("internal error");
+    }
+}
+
+/*
+this leads to a problem with the ALU. we're ignoring FP support as of now,
+but the set and compare instructions aren't supported. The alu doesn't latch 
+the status bits for multistep comparison, so it has to
+be changed to support that without conflicting with preexisting instructions.
+
+the problem is fixed! we now support set and cmp instructions.
+*/
+
+/// @brief potato | emit: convert a local variable to boolean (check 1/0)
+/// @param ty 
+static void emit_to_bool(Type *ty) {
+    SAVE;
+    if (is_flotype(ty)) {
+        //push the variable to the stack
+        push_xmm(xmm1);
+        //xor a copy with itself (blank it out)
+        emit("xor %d, %d, %d", xmm1, xmm1, xmm1);
+        //compare it with xmm0 (what is it?) according to its type
+        //emit("%s #xmm1, #xmm0", (ty->kind == KIND_FLOAT) ? "ucomiss" : "ucomisd");
+        emit("cmp %d, %d", xmm1, xmm0);
+        //set the alu status register if not equal.
+
+        emit("setne %d", rax);
+        pop_xmm(xmm1);
+    } else {
+        emit("cmp $0, #rax");
+        emit("setne %d", rax);
+    }
+    emit("mov %d, %d", rax, eax);
+}
+
+/// @brief potato |emit: compare local variable to instance (float specific)
+/// @param inst 
+/// @param usiginst 
+/// @param node 
+static void emit_comp(char *inst, char *usiginst, Node *node) {
+    SAVE;
+    if (is_flotype(node->left->ty)) {
+        emit_expr(node->left);
+        push_xmm(0);
+        emit_expr(node->right);
+        pop_xmm(1);
+        if (node->left->ty->kind == KIND_FLOAT)
+            emit("cmp %d, %d", xmm0, xmm1);
+        else
+            emit("cmp %d, %d", xmm0, xmm1);
+    } else {
+        emit_expr(node->left);
+        push(rax);
+        emit_expr(node->right);
+        pop(rcx);
+        int kind = node->left->ty->kind;
+        if (kind == KIND_LONG || kind == KIND_LLONG)
+          emit("cmp rax, rcx");
+        else
+          emit("cmp eax, ecx");
+    }
+    if (is_flotype(node->left->ty) || node->left->ty->usig)
+        emit("%s rax", usiginst);
+    else
+        emit("%s rax", inst);
+    emit("mov rax, eax");
+}
+
+/*
+note: the ISA doesn't support division or modulus,
+so these operations are not implemented. future support may be added.
+*/
+
+/// @brief potato | emit: integer arithmetic!!
+/// @param node 
+static void emit_binop_int_arith(Node *node) {
+    SAVE;
+    char *op = NULL;
+    switch (node->kind) {
+    case '+': op = "add"; break;
+    case '-': op = "sub"; break;
+    case '*': op = "mult"; break;
+    case '^': op = "xor"; break;
+    case OP_SAL: op = "sal"; break;
+    case OP_SAR: op = "sar"; break;
+    case OP_SHR: op = "shr"; break;
+    case '/': case '%': break;
+    default: error("invalid operator '%d'", node->kind);
+    }
+    emit_expr(node->left);
+    push(rax);
+    emit_expr(node->right);
+    emit("mov rax, rcx");
+    pop(rax);
+    if (node->kind == '/' || node->kind == '%') {
+        if (node->ty->usig) {
+          //emit("xor #edx, #edx");
+          //emit("div #rcx");
+          error("unsupported operation '%d'", node->kind);
+        } else {
+          //emit("cqto");
+          //emit("idiv #rcx");
+          error("unsupported operation '%d'", node->kind);
+        }
+        if (node->kind == '%')
+            //emit("mov #edx, #eax");
+    } else if (node->kind == OP_SAL || node->kind == OP_SAR || node->kind == OP_SHR) {
+        //emit("%s #cl, #%s", op, get_int_reg(node->left->ty, 'a'));
+        emit("%s rcx, rax", op);
+    } else {
+        emit("%s rcx, rax", op);
+    }
 }
