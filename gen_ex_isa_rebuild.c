@@ -1005,6 +1005,7 @@ static void emit_binop_int_arith(Node *node) {
           error("unsupported operation '%d'", node->kind);
         }
         if (node->kind == '%')
+            error("unsupported operation '%d'", node->kind);
             //emit("mov #edx, #eax");
     } else if (node->kind == OP_SAL || node->kind == OP_SAR || node->kind == OP_SHR) {
         //emit("%s #cl, #%s", op, get_int_reg(node->left->ty, 'a'));
