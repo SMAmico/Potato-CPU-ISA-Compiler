@@ -935,7 +935,7 @@ static void emit_to_bool(Type *ty) {
     emit("mov %d, %d", rax, eax);
 }
 
-/// @brief potato |emit: compare local variable to instance (float specific)
+/// @brief potato | emit: compare local variable to instance (float specific)
 /// @param inst 
 /// @param usiginst 
 /// @param node 
@@ -971,6 +971,7 @@ static void emit_comp(char *inst, char *usiginst, Node *node) {
 /*
 note: the ISA doesn't support division or modulus,
 so these operations are not implemented. future support may be added.
+SAL and SAR map to the ISA's SHL and SHR.
 */
 
 /// @brief potato | emit: integer arithmetic!!
@@ -1009,8 +1010,111 @@ static void emit_binop_int_arith(Node *node) {
             //emit("mov #edx, #eax");
     } else if (node->kind == OP_SAL || node->kind == OP_SAR || node->kind == OP_SHR) {
         //emit("%s #cl, #%s", op, get_int_reg(node->left->ty, 'a'));
-        emit("%s rcx, rax", op);
+        emit("%s %d, %d", op, get_int_reg(node->left->ty, 'a'), rcx);
     } else {
-        emit("%s rcx, rax", op);
+        emit("%s %d, %d", op, rax, rcx);
     }
+}
+
+/*
+we don't have any float support, so none of this gets used.
+it'll be kept for reference when float support is added.
+*/
+
+/// @brief potato | emit: floating-point arithmetic
+/// @param node 
+static void emit_binop_float_arith(Node *node) {
+    SAVE;
+    char *op;
+    bool isdouble = (node->ty->kind == KIND_DOUBLE);
+    error("floating point arithmetic is not supported in this ISA");
+    /*
+    switch (node->kind) {
+    case '+': op = (isdouble ? "addsd" : "addss"); break;
+    case '-': op = (isdouble ? "subsd" : "subss"); break;
+    case '*': op = (isdouble ? "mulsd" : "mulss"); break;
+    case '/': op = (isdouble ? "divsd" : "divss"); break;
+    default: error("invalid operator '%d'", node->kind);
+    }
+    
+    emit_expr(node->left);
+    push_xmm(0);
+    emit_expr(node->right);
+    emit("%s #xmm0, #xmm1", (isdouble ? "movsd" : "movss"));
+    pop_xmm(0);
+    emit("%s #xmm1, #xmm0", op);
+    */
+}
+
+/// @brief potato | emit: load and convert data between types
+/// @param to 
+/// @param from 
+static void emit_load_convert(Type *to, Type *from) {
+    SAVE;
+    if (is_inttype(from) && to->kind == KIND_FLOAT)
+        //we convert and int to a float by moving it from a std reg to a float reg
+        //emit("cvtsi2ss #eax, #xmm0");
+        emit("mov eax, xmm0");
+    else if (is_inttype(from) && to->kind == KIND_DOUBLE)
+        //same story for a double
+        //emit("cvtsi2sd #eax, #xmm0");
+        emit("mov eax, xmm0");
+    else if (from->kind == KIND_FLOAT && to->kind == KIND_DOUBLE)
+        //really nothing happens in regards to the registers.
+        //there's no double or float distinction in the ISA.
+        //emit("cvtps2pd #xmm0, #xmm0");
+        return;
+    else if ((from->kind == KIND_DOUBLE || from->kind == KIND_LDOUBLE) && to->kind == KIND_FLOAT)
+        //once again, there's no distinction to us.
+        //emit("cvtpd2ps #xmm0, #xmm0");
+        return;
+    else if (to->kind == KIND_BOOL)
+        //now, booleans we have handled already.
+        emit_to_bool(from);
+    else if (is_inttype(from) && is_inttype(to))
+        emit_intcast(from);
+    else if (is_inttype(to))
+        emit_toint(from);
+}
+
+/*
+in the ISA, there's no assembly leave or return instruction.
+we just have to manually pop the stack and return.
+*/
+
+/// @brief potato | emit: return call
+static void emit_ret() {
+    SAVE;
+    emit("leave");
+    emit("ret");
+    //set stack pointer to the current base pointer,
+    //then pop the old bsae pointer from the stack to restore it.
+    emit("mov rsp, rbp");
+    pop(rbp);
+
+    //return
+
+    pop(pc);
+}
+
+/// @brief potato | emit: binop comparison (LT LE EQ NE)
+/// @param node 
+static void emit_binop(Node *node) {
+    SAVE;
+    if (node->ty->kind == KIND_PTR) {
+        emit_pointer_arith(node->kind, node->left, node->right);
+        return;
+    }
+    switch (node->kind) {
+    case '<': emit_comp("setlt", "setb", node); return;
+    case OP_EQ: emit_comp("seteq", "sete", node); return;
+    case OP_LE: emit_comp("setle", "setna", node); return;
+    case OP_NE: emit_comp("setne", "setne", node); return;
+    }
+    if (is_inttype(node->ty))
+        emit_binop_int_arith(node);
+    else if (is_flotype(node->ty))
+        emit_binop_float_arith(node);
+    else
+        error("internal error: %s", node2s(node));
 }
