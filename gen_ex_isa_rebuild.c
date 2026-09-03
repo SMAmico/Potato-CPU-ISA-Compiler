@@ -1193,7 +1193,8 @@ static void emit_save_literal(Node *node, Type *totype, int off) {
     }
 }
 
-/// @brief emit: emit address for a variable (local global struct func)
+
+/// @brief potato | emit: emit address for a variable (local global struct func)
 /// @param node 
 static void emit_addr(Node *node) {
     switch (node->kind) {
@@ -1203,13 +1204,29 @@ static void emit_addr(Node *node) {
         //so we find the address based on its offset from the base
         //pointer.
         ensure_lvar_init(node);
-        emit("lea %d(#rbp), #rax", node->loff);
+        //emit("lea %d(#rbp), #rax", node->loff);
+        //add the absolute address to the base pointer to
+        //get the absolute address of the variable.
+
+        //zero out the register
+        emit("mov %d, %d", rax, zero);
+        //insert the offset
+        emit("movi %d, %d", rax, node->loff);
+        //add the offset to the base
+        emit("add %d, %d, %d", rax, rbp, rax);
         break;
     case AST_GVAR:
         //global variables are stored elsewhere, so we
         //use the global label and the instruction pointer to
         //find the absolute address.
-        emit("lea %s(#rip), #rax", node->glabel);
+        //emit("lea %s(#rip), #rax", node->glabel);
+
+        //zero out the register
+        emit("mov %d, %d", rax, zero);
+        //insert the offset
+        emit("movi %d, %s", rax, node->glabel);
+        //add to the instruction pointer
+        emit("add %d, %d, %d", rax, pc, rax);
         break;
     case AST_DEREF:
         //if we want to dereference a pointer,
@@ -1218,12 +1235,56 @@ static void emit_addr(Node *node) {
         break;
     case AST_STRUCT_REF:
         emit_addr(node->struc);
-        emit("add $%d, #rax", node->ty->offset);
+        //emit("add $%d, #rax", node->ty->offset);
+        emit("movi %d, %d", tmp, node->ty->offset);
+        emit("add %d, %d, %d", rax, tmp, rax);
         break;
     case AST_FUNCDESG:
-        emit("lea %s(#rip), #rax", node->fname);
+        //emit("lea %s(#rip), #rax", node->fname);
+
+        //lea pseudo-op
+        emit("mov %d, %d", rax, zero);
+        emit("movi %d, %s", rax, node->fname);
+        emit("add %d, %d, %d", rax, pc, rax);
         break;
     default:
         error("internal error: %s", node2s(node));
     }
+}
+
+/*
+use a rootfinding-style method to procedurally copy
+
+*/
+
+/// @brief emit: duplicate a struct in memory
+/// @param left 
+/// @param right 
+static void emit_copy_struct(Node *left, Node *right) {
+    push(rcx);
+    push(tmp);
+    emit_addr(right);
+    emit("mov #rax, #rcx");
+    emit_addr(left);
+    int i = 0;
+    for (; i < left->ty->size; i += 8) {
+        //move 8 bytes at a time from rcx to rax
+        emit("movq %d(#rcx), #r11", i);
+        emit("movq #r11, %d(#rax)", i);
+        
+        emit("mov %d, %d",)
+
+    }
+    //repeat for 4 bytes
+    for (; i < left->ty->size; i += 4) {
+        emit("movl %d(#rcx), #r11", i);
+        emit("movl #r11, %d(#rax)", i);
+    }
+    //repeat for single bytes
+    for (; i < left->ty->size; i++) {
+        emit("movb %d(#rcx), #r11", i);
+        emit("movb #r11, %d(#rax)", i);
+    }
+    pop(tmp);
+    pop(rcx);
 }
