@@ -1118,3 +1118,112 @@ static void emit_binop(Node *node) {
     else
         error("internal error: %s", node2s(node));
 }
+
+// -- 9/3/26 start --
+
+/// @brief potato | emit: save a literal primitive to memory
+/// @param node 
+/// @param totype 
+/// @param off 
+static void emit_save_literal(Node *node, Type *totype, int off) {
+    switch (totype->kind) {
+    //switch based on kind. we store the values to BP with an offset passed in.
+
+    //booleans are stored the same as char/int/long, and the compiler moves a byte.
+    // the '!!' operator acts as an existence operator, returning 1 for x != 0.
+    // this allows us to do conversion and storage in one line.
+    case KIND_BOOL:{
+        //emit("movb $%d, %d(#rbp)", !!node->ival, off);
+        emit("STR %d, %d, %d", !!node->ival, rbp, off);
+        break;
+    }  
+    //chars are also stored as a byte
+    case KIND_CHAR:{
+        //emit("movb $%d, %d(#rbp)", node->ival, off);
+        emit("STR %d, %d, %d", node->ival, rbp, off);
+        
+        break;
+    }
+    //shorts are stored as a half-word. (technically that's all we have)
+    case KIND_SHORT: {
+        //emit("movw $%d, %d(#rbp)", node->ival, off);
+        emit("STR %d, %d, %d", node->ival, rbp, off);
+        break;
+    }
+    //ints are stored as a lower word (32 bits). we still store the whole 16-bit register.
+    case KIND_INT: {
+        //emit("movl $%d, %d(#rbp)", node->ival, off);
+        emit("STR %d, %d, %d", node->ival, rbp, off);
+        break;
+    }
+    //longs, long longs and pointers are stored as two words, ie 64 bits split into two 32-bit words.
+    //our memory is word-addressed, so we offset by one address instead of 4 bytes.
+    case KIND_LONG:
+    case KIND_LLONG:
+    case KIND_PTR: {
+        //emit("movl $%lu, %d(#rbp)", ((uint64_t)node->ival) & ((1L << 32) - 1), off);
+        //emit("movl $%lu, %d(#rbp)", ((uint64_t)node->ival) >> 32, off + 4);
+        emit("STR %d, %d, %d", ((uint64_t)node->ival) & ((1L << 32) - 1), rbp, off);
+        emit("STR %d, %d, %d", ((uint64_t)node->ival) >> 32, rbp, off + 1);
+        break;
+    }
+    //floats are stored as one word.
+    //they're first cast to a uint32, then stored.
+    //yes, this doesn't fit into our memory cleanly, but this will work for the moment
+    //and will be addressed when we implement floating point support in the ISA.
+    case KIND_FLOAT: {
+        float fval = node->fval;
+        //emit("movl $%u, %d(#rbp)", *(uint32_t *)&fval, off);
+        emit("STR %d, %d, %d", *(uint32_t *)&fval, rbp, off);
+        break;
+    }
+    //doubles are stored similarly, but as two words through a uint64.
+    //our memory is word-addressed, so we offset by one address instead of 4 bytes.
+    case KIND_DOUBLE:
+    case KIND_LDOUBLE: {
+        //emit("movl $%lu, %d(#rbp)", *(uint64_t *)&node->fval & ((1L << 32) - 1), off);
+        //emit("movl $%lu, %d(#rbp)", *(uint64_t *)&node->fval >> 32, off + 4);
+        emit("STR %d, %d, %d", *(uint64_t *)&node->fval & ((1L << 32) - 1), rbp, off);
+        emit("STR %d, %d, %d", *(uint64_t *)&node->fval >> 32, rbp, off + 1);
+        break;
+    }
+    //default case.
+    default:
+        error("internal error: <%s> <%s> <%d>", node2s(node), ty2s(totype), off);
+    }
+}
+
+/// @brief emit: emit address for a variable (local global struct func)
+/// @param node 
+static void emit_addr(Node *node) {
+    switch (node->kind) {
+    //we emit the address of a variable based on type.
+    case AST_LVAR:
+        //local variables are stored on the stack,
+        //so we find the address based on its offset from the base
+        //pointer.
+        ensure_lvar_init(node);
+        emit("lea %d(#rbp), #rax", node->loff);
+        break;
+    case AST_GVAR:
+        //global variables are stored elsewhere, so we
+        //use the global label and the instruction pointer to
+        //find the absolute address.
+        emit("lea %s(#rip), #rax", node->glabel);
+        break;
+    case AST_DEREF:
+        //if we want to dereference a pointer,
+        //we emit the related expression to get the address
+        emit_expr(node->operand);
+        break;
+    case AST_STRUCT_REF:
+        emit_addr(node->struc);
+        emit("add $%d, #rax", node->ty->offset);
+        break;
+    case AST_FUNCDESG:
+        emit("lea %s(#rip), #rax", node->fname);
+        break;
+    default:
+        error("internal error: %s", node2s(node));
+    }
+}
