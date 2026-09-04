@@ -22,7 +22,7 @@
 
     Assembly syntax (whitespace and commas separate tokens):
 
-    - Registers: R0 .. R15 (case-insensitive) or numeric 0..15. R0 is fixed at zero, R14 is TMP, and R15 is PC.
+    - Registers: R0 .. R15 (case-insensitive) or numeric 0..15. R0 is fixed at zero, R14 is ASM_TMP, and R15 is PC.
       -- Assembly formatting instructions --
       - Use .text for instructions and instruction labels.
       - Use .data for data directives and data labels.
@@ -42,6 +42,11 @@
                           byte) plus a null terminator; backslash escapes (\n \t \r \\ \" \0) decode
                           to their real byte value before packing
 
+        Debug metadata directives emitted by the 8cc backend are accepted and do not
+        contribute to instruction or data addresses:
+            .file number "filename"
+            .loc file line [column]
+
     Instruction formats implemented :
 
       STR rA, rB/LABEL, soff (store RF[rA] -> D[RF[rB] + soff])
@@ -51,8 +56,12 @@
 
       ADD rA, rB, rC (rA = rB + rC)
           -> 0011 raaa rbbb rccc
+      ADDI rA, rB, imm/label (rA = rB + immediate)
+          -> pseudo-instruction: MOVI ASM_TMP, immediate; ADD rA, rB, ASM_TMP
       SUB rA, rB, rC (rA = rB - rC)
           -> 0100 raaa rbbb rccc
+      SUBI rA, rB, imm/label (rA = rB - immediate)
+          -> pseudo-instruction: MOVI ASM_TMP, immediate; SUB rA, rB, ASM_TMP
       HLT                              
           -> 0101 0000 0000 0000
 
@@ -61,8 +70,12 @@
              can load a label from either iram or dram.
       OR  rA, rB, rC   (rA = rB | rC)
           -> 0111 raaa rbbb rccc
+      ORI rA, rB, imm/label (rA = rB | immediate)
+          -> pseudo-instruction: MOVI ASM_TMP, immediate; OR rA, rB, ASM_TMP
       AND rA, rB, rC   (rA = rB & rC)
           -> 1000 raaa rbbb rccc
+      ANDI rA, rB, imm/label (rA = rB & immediate)
+          -> pseudo-instruction: MOVI ASM_TMP, immediate; AND rA, rB, ASM_TMP
 
       JMP offset/LABEL (PC = PC + soff12)
           -> 1001 bbbb bbbb bbbb  (signed 12-bit PC-relative offset)
@@ -87,6 +100,8 @@
           -> 1100 raaa shft rccc     (shft is an unsigned 4-bit immediate)
       MULT rA, rB, rC  (rA = rB * rC)
           -> 1101 raaa rbbb rccc    
+      MULTI rA, rB, imm/label (rA = rB * immediate)
+          -> pseudo-instruction: MOVI ASM_TMP, immediate; MULT rA, rB, ASM_TMP
       SHR rA, rB, shft (rA = rB >> shft)
           -> 0000 raaa shft rccc
 
@@ -95,7 +110,7 @@
       MOV rA, rB       (rA = rB)
           -> 1000 raaa rbbb rccc    (AND RA with RA into RB, effectively moving) 
       XOR rA, rB, rC   (rA = rB ^ rC)
-          -> pseudo-ins
+          -> 1011 raaa rbbb rccc
 
 
     The assembler supports labels for PC-relative control flow and computes relative offsets
@@ -105,22 +120,26 @@
 */
 
 
-
 //DEFINES: aliases for all instructions in the ISA
 #define ins_shr 0x0
 #define ins_str 0x1
 #define ins_ldr 0x2
 #define ins_add 0x3
+#define ins_addi 0x11
 #define ins_sub 0x4
+#define ins_subi 0x12
 #define ins_hlt 0x5
 #define ins_movi 0x6
 #define ins_or 0x7
+#define ins_ori 0x13
 #define ins_and 0x8
+#define ins_andi 0x14
 #define ins_jmp 0x9
 #define ins_jnz 0xA
 #define ins_jlt 0xB
 #define ins_shl 0xC
 #define ins_mult 0xD
+#define ins_multi 0x15
 #define ins_nop 0xE
 #define ins_mov 0xF
 #define ins_xor 0x10
@@ -355,8 +374,11 @@ static void emit_asm(int op, int a, int b, int c) {
     case ins_add:
         emit("add %d, %d, %d", a, b, c);
         return;
-    case ins_sub:
-        emit("sub %d, %d, %d", a, b, c);
+    case ins_addi:
+        emit("addi %d, %d, %d", a, b, c);
+        return;
+    case ins_subi:
+        emit("subi %d, %d, %d", a, b, c);
         return;
     case ins_hlt:
         emit("hlt");
@@ -364,8 +386,14 @@ static void emit_asm(int op, int a, int b, int c) {
     case ins_or:
         emit("or %d, %d, %d", a, b, c);
         return;
+    case ins_ori:
+        emit("ori %d, %d, %d", a, b, c);
+        return;
     case ins_and:
         emit("and %d, %d, %d", a, b, c);
+        return;
+    case ins_andi:
+        emit("andi %d, %d, %d", a, b, c);
         return;
     case ins_xor:
         emit("xor %d, %d, %d", a, b, c);
@@ -378,6 +406,9 @@ static void emit_asm(int op, int a, int b, int c) {
         return;
     case ins_mult:
         emit("mult %d, %d, %d", a, b, c);
+        return;
+    case ins_multi:
+        emit("multi %d, %d, %d", a, b, c);
         return;
     default:
         error("Unknown EX_ISA opcode: %d", op);
@@ -425,8 +456,7 @@ static int align(int n, int m) {
 static void push_xmm(int reg) {
     SAVE;
     //subtract 1 from stack pointer (word address in direct memory mapping)
-    emit_asm(ins_movi, tmp, 1);
-    emit_asm(ins_sub, sp, tmp, sp); //PROBLEM: sp only contains a register value, isa can only write direct values
+    emit("subi %d, %d, %d", sp, sp, 1); //PROBLEM: sp only contains a register value, isa can only write direct values
                                          //SOLUTION: make str and ldr pull addresses from registers instead of
                                          // direct memory mapping, expanding address space to 16 bit 
                                          //FIXED: this is now fixed in the arch
@@ -444,8 +474,7 @@ static void pop_xmm(int reg) {
     emit_asm(ins_ldr, reg, sp, 0);
     //add 1 to stack pointer
     //emit("movsd (#rsp), #xmm%d", reg);
-    emit_asm(ins_movi, tmp, 1);
-    emit_asm(ins_add, sp, tmp, sp);
+    emit("addi %d, %d, %d", sp, sp, 1);
     stackpos -= 1;
     assert(stackpos >= 0);
 }
@@ -456,8 +485,7 @@ static void pop_xmm(int reg) {
 /// @param reg 
 static void push(int reg) {
     SAVE;
-    emit("movi %d, %d", tmp, 1);
-    emit("sub %d, %d, %d", sp, tmp, sp);
+    emit("subi %d, %d, %d", sp, sp, 1);
     emit("str %d, %d, %d", reg, sp, 0);
     stackpos += 1; //remember, each instruction is 16 bits, so only 1 word
 }
@@ -467,8 +495,7 @@ static void push(int reg) {
 static void pop(int reg) {
     SAVE;
     emit("ldr %d, %d, %d", reg, sp, 0);
-    emit("movi %d, %d", tmp, 1);
-    emit("add %d, %d, %d", sp, tmp, sp);
+    emit("addi %d, %d, %d", sp, sp, 1);
     stackpos -= 1;  //remember, each instruction is 16 bits, so only 1 word
     assert(stackpos >= 0);
 }
@@ -489,8 +516,7 @@ static int push_struct(int size) {
     int aligned = align(size, 2);
     int words = aligned / 2;
 
-    emit_asm(ins_movi, tmp, words + 1);
-    emit_asm(ins_sub, sp, tmp, sp);
+    emit("subi %d, %d, %d", sp, sp, words + 1);
     emit_asm(ins_str, rcx, sp, 0);
 
     /* Copy the source struct pointer from rax into rcx and then copy the
@@ -514,12 +540,9 @@ static void maybe_emit_bitshift_load(Type *ty) {
         return;
     //emit("shr $%d, #rax", ty->bitoff);
     emit_asm(ins_shr, rax, rax, ty->bitoff);
-    push(rcx);
-    emit_asm(ins_movi, rcx, (1 << (long)ty->bitsize) - 1);
     //emit("mov $0x%lx, #rcx", (1 << (long)ty->bitsize) - 1);
     //emit("and #rcx, #rax");
-    emit_asm(ins_and, rax, rcx, rax);
-    pop(rcx);
+    emit("andi %d, %d, %d", rax, rax, (1 << (long)ty->bitsize) - 1);
 }
 
 // -- 7/22/26 start --
@@ -532,21 +555,18 @@ static void maybe_emit_bitshift_save(Type *ty) {
         return;
     //save rcx and rdi
     push(rcx);
-    push(rdi);
 
     //operation: rax(minus last bit) << bitoff ||  rcx(last bit) << bitoff
 
     //mask out last bit of rax
     //emit("mov $0x%lx, #rdi", (1 << (long)ty->bitsize) - 1);
-    emit_asm(ins_movi, rdi, (1 << (long)ty->bitsize) - 1);
-    emit_asm(ins_and, rdi, rax, rax);
+    emit("andi %d, %d, %d", rax, rax, ((1 << (long)ty->bitsize) - 1));
     //adjust for offset
     emit_asm(ins_shl, rax, rax, ty->bitoff);
     //mask out last bit of rcx 
-    emit_asm(ins_movi, rdi, ~(((1 << (long)ty->bitsize) - 1) << ty->bitoff) & 0xFFFF);
-    emit_asm(ins_and, rdi, rcx, rcx);
+    emit("andi %d, %d, %d", rcx, rcx, ~(((1 << (long)ty->bitsize) - 1) << ty->bitoff) & 0xFFFF);
+
     emit_asm(ins_or, rcx, rax, rax);
-    pop(rdi);
     pop(rcx);
 }
 
@@ -587,13 +607,8 @@ static void emit_gload(Type *ty, char *label, int off) {
         emit_asm(ins_mov, rax, zero);
         emit("movi %d, %s", rax, label);
         if (off) {
-            // The assembler may use TMP to expand a 16-bit label address;
-            // clear it before loading the array-element displacement.
-            emit_asm(ins_mov, tmp, zero);
-            // Put the requested byte/word displacement in TMP.
-            emit_asm(ins_movi, tmp, off);
             // Form label + off so rax holds the address of the array element.
-            emit_asm(ins_add, rax, rax, tmp);
+            emit("addi %d, %d, %d", rax, rax, off);
         }
         return;
     }
@@ -669,13 +684,13 @@ static void emit_lload(Type *ty, int base, int off) {
         // MOVI ORs the immediate into TMP, so we clear TMP before loading the
         // magnitude of the array-element displacement.
         emit_asm(ins_mov, tmp, zero);
-        emit_asm(ins_movi, tmp, off < 0 ? -off : off);
+
         if (off < 0) {
             // Subtract the negative displacement to form base + off in rax.
-            emit_asm(ins_sub, rax, rax, tmp);
+            emit_asm(ins_subi, rax, rax, off < 0 ? -off : off);
         } else {
             // Add the positive displacement to form base + off in rax.
-            emit_asm(ins_add, rax, rax, tmp);
+            emit_asm(ins_addi, rax, rax, off < 0 ? -off : off);
         }
         return;
     }
@@ -807,14 +822,14 @@ static void emit_pointer_arith(char kind, Node *left, Node *right) {
     emit_expr(right);
     int size = left->ty->ptr->size;
     if (size > 1) {
-        emit("MOVI %d, %d", tmp, size);
-        emit("MULT %d, %d, %d", rax, rax, tmp);
+        emit("movi %d, %d", tmp, size);
+        emit("mult %d, %d, %d", rax, rax, tmp);
     }
-    emit("MOV %d, %d, %d", rax, rax, rcx);
+    emit("mov %d, %d, %d", rax, rax, rcx);
     pop(rax);
     switch (kind) {
-    case '+': emit("ADD %d, %d, %d", rcx, rax, rax); break;
-    case '-': emit("SUB %d, %d, %d", rcx, rax, rax); break;
+    case '+': emit("add %d, %d, %d", rcx, rax, rax); break;
+    case '-': emit("sub %d, %d, %d", rcx, rax, rax); break;
     default: error("invalid operator '%d'", kind);
     }
     pop(rcx);
@@ -1223,25 +1238,16 @@ static void emit_addr(Node *node) {
         //add the absolute address to the base pointer to
         //get the absolute address of the variable.
 
-        //zero out the register
-        emit("mov %d, %d", rax, zero);
-        //insert the offset
-        emit("movi %d, %d", rax, node->loff);
         //add the offset to the base
-        emit("add %d, %d, %d", rax, rbp, rax);
+        emit("addi %d, %d, %d", rax, rbp, node->loff);
         break;
     case AST_GVAR:
         //global variables are stored elsewhere, so we
         //use the global label and the instruction pointer to
         //find the absolute address.
         //emit("lea %s(#rip), #rax", node->glabel);
-
-        //zero out the register
-        emit("mov %d, %d", rax, zero);
-        //insert the offset
-        emit("movi %d, %s", rax, node->glabel);
         //add to the instruction pointer
-        emit("add %d, %d, %d", rax, pc, rax);
+        emit("addi %d, %d, %d", rax, pc, node->glabel);
         break;
     case AST_DEREF:
         //if we want to dereference a pointer,
@@ -1251,16 +1257,13 @@ static void emit_addr(Node *node) {
     case AST_STRUCT_REF:
         emit_addr(node->struc);
         //emit("add $%d, #rax", node->ty->offset);
-        emit("movi %d, %d", tmp, node->ty->offset);
-        emit("add %d, %d, %d", rax, tmp, rax);
+        emit("addi %d, %d, %d", rax, rax, node->ty->offset);
         break;
     case AST_FUNCDESG:
         //emit("lea %s(#rip), #rax", node->fname);
 
         //lea pseudo-op
-        emit("mov %d, %d", rax, zero);
-        emit("movi %d, %s", rax, node->fname);
-        emit("add %d, %d, %d", rax, pc, rax);
+        emit("addi %d, %d, %d", rax, pc, node->fname);
         break;
     default:
         error("internal error: %s", node2s(node));
@@ -1513,13 +1516,8 @@ static void emit_literal(Node *node) {
         }
         //load the address of the string to rax
         //emit("lea %s(#rip), #rax", node->slabel);
-
-        //zero out the register
-        emit("mov %d, %d", rax, zero);
-        //insert the offset
-        emit("movi %d, %s", rax, node->slabel);
         //add to the instruction pointer
-        emit("add %d, %d, %d", rax, pc, rax);
+        emit("add %d, %d, %d", rax, pc, node->slabel);
         break;
     }
     default:
@@ -1635,4 +1633,52 @@ static void emit_lvar(Node *node) {
 static void emit_gvar(Node *node) {
     SAVE;
     emit_gload(node->ty, node->glabel, 0);
+}
+
+/// @brief potato | emit: load the return address of a function call
+/// @param node 
+static void emit_builtin_return_address(Node *node) {
+    push(tmp);
+    assert(vec_len(node->args) == 1);
+    emit_expr(vec_head(node->args));
+    char *loop = make_label();
+    char *end = make_label();
+    char *is_zero = make_label();
+    char *not_zero = make_label();
+    //backup base pointer to tmp
+    emit("mov %d, %d", rbp, tmp);
+    //make a looping label
+    emit_label(loop);
+    //emit("test #rax, #rax");
+
+    //jank to get je to work.
+    //if rax is not zero, jump to end
+    emit("jnz %d, %s", rax, not_zero);
+    emit_jmp(end);
+    emit_label(not_zero);
+    //if it isn't:
+    //emit("mov (#r11), #r11");
+    emit("str %d, %d", tmp, tmp);
+    //emit("sub $1, #rax");
+    //decrement rax by 1
+    emit("subi %d, %d, %d", rax, rax, 1);
+    emit_jmp(loop);
+    emit_label(end);
+    emit("mov 8(#r11), #rax");
+    emit("str %d, %d, %d", rax, tmp, 8);
+    pop(tmp);
+}
+
+/// @brief potato | Set the register class for parameter passing to RAX. 0 is INTEGER, 1 is SSE, 2 is MEMORY.
+/// @param node 
+static void emit_builtin_reg_class(Node *node) {
+    Node *arg = vec_get(node->args, 0);
+    assert(arg->ty->kind == KIND_PTR);
+    Type *ty = arg->ty->ptr;
+    if (ty->kind == KIND_STRUCT)
+        emit("movi %d, %d", eax, 2);
+    else if (is_flotype(ty))
+        emit("movi %d, %d", eax, 1);
+    else
+        emit("movi %d, %d", eax, 0);
 }
