@@ -13,6 +13,12 @@
     Simple two-pass assembler for the project's EX_ISA.
 
     Usage: assembler-EX_ISA <input.asm> <output.txt> [--mif] [--mif-out <output.mif>]
+                             [--data-out <data.txt>] [--data-mif-out <data.mif>]
+
+    This machine has split instruction/data memories: <output.txt>/<output.mif> hold the assembled
+    instruction stream, while the data section is written to its own plaintext file (default
+    <output>.data.txt, override with --data-out) and, with --mif, its own MIF (default
+    <output>.data.mif, override with --data-mif-out).
 
     Assembly syntax (whitespace and commas separate tokens):
 
@@ -26,6 +32,15 @@
     - Registers are R0..R15 (case-insensitive).
     - Control-flow labels (JMP/JLT label form) must be .text labels.
       - Memory-address labels (STR/LDR label form) must be .data labels.
+
+    .data directives (written to the separate data output/MIF described above):
+      .word v1[, v2...]   writes one 16-bit word per value
+      .space count        writes count zero words
+      .long v1[, v2...]   writes 2 words per 32-bit value, most-significant word first
+      .quad v1[, v2...]   writes 4 words per 64-bit value, most-significant word first
+      .string "literal"   writes ceil((chars+1)/2) words, packing 2 chars/word (first char in the high
+                          byte) plus a null terminator; backslash escapes (\n \t \r \\ \" \0) decode
+                          to their real byte value before packing
 
     Instruction formats implemented :
 
@@ -1257,6 +1272,8 @@ use a rootfinding-style method to procedurally copy
 
 */
 
+// -- 9/4/26 start --
+
 /// @brief potato | emit: duplicate a struct in memory
 /// @param left 
 /// @param right 
@@ -1413,4 +1430,209 @@ static void emit_label(char *label) {
 /// @param label 
 static void emit_jmp(char *label) {
     emit("jmp %s", label);
+}
+
+/// @brief potato | emit: copy literal into registers according to type
+/// @param node 
+static void emit_literal(Node *node) {
+    SAVE;
+    switch (node->ty->kind) {
+    case KIND_BOOL:
+    case KIND_CHAR:
+    case KIND_SHORT:
+        //int and short are treated the same in this isa due to the word length.
+        //moves
+        //emit("mov $%u, #rax", node->ival);
+        emit("movi %d, %u", rax, node->ival);
+
+        break;
+    case KIND_INT:
+        //copy an int into a register.
+        //emit("mov $%u, #rax", node->ival);
+        emit("movi %d, %u", rax, node->ival);
+        break;
+    case KIND_LONG:
+    case KIND_LLONG: {
+        //move a long long into a register.
+        //it must be trimmed to 16 bits to fit, though.
+        emit("movi %d, %d", rax, (node->ival & 0xFFFF));
+        break;
+    }
+    case KIND_FLOAT: {
+        //this uses a hack to store the float in memory, then copy it into
+        //a floating-point register. since there's no FP support,
+        //we just trim it to 16 bits and store in a dummy fp reg.
+        /*
+        if (!node->flabel) {
+            node->flabel = make_label();
+            float fval = node->fval;
+            //we switch to data section,
+            emit_noindent(".data");
+            emit_label(node->flabel);
+            //store float as a long,
+            emit(".long %d", *(uint32_t *)&fval);
+            //then return to text section.
+            emit_noindent(".text");
+        }
+        emit("movss %s(#rip), #xmm0", node->flabel);
+        */
+        emit("movi %d, %d", xmm0, (int)(node->fval) & 0xFFFF); // store float as int for now
+        break;
+    }
+    case KIND_DOUBLE:
+    case KIND_LDOUBLE: {
+        //the same trick is used here. we'll cap it 
+        //the same way floats are.
+        /*
+        if (!node->flabel) {
+            node->flabel = make_label();
+            emit_noindent(".data");
+            emit_label(node->flabel);
+            emit(".quad %lu", *(uint64_t *)&node->fval);
+            emit_noindent(".text");
+        }
+        emit("movsd %s(#rip), #xmm0", node->flabel);
+        */
+        emit("movi %d, %d", xmm0, (int)(node->fval) & 0xFFFF); // store double as int for now
+        break;
+    }
+    case KIND_ARRAY: {
+        //arrays are weird. they must inherently be stored in memory,
+        //so we use the hack out of necessity this time.
+        if (!node->slabel) {
+            //make a label for the string
+            node->slabel = make_label();
+            //open data section
+            emit_noindent(".data");
+            //emit the label
+            emit_label(node->slabel);
+            //emit the string
+            emit(".string \"%s\"", quote_cstring_len(node->sval, node->ty->size - 1));
+            //return to text section
+            emit_noindent(".text");
+        }
+        //load the address of the string to rax
+        //emit("lea %s(#rip), #rax", node->slabel);
+
+        //zero out the register
+        emit("mov %d, %d", rax, zero);
+        //insert the offset
+        emit("movi %d, %s", rax, node->slabel);
+        //add to the instruction pointer
+        emit("add %d, %d, %d", rax, pc, rax);
+        break;
+    }
+    default:
+        error("internal error");
+    }
+}
+
+/// @brief potato | count the number of lines in a buffer, then split the buffer into a set of null-terminated lines
+/// @param buf 
+/// @return 
+static char **split(char *buf) {
+    char *p = buf;
+    int len = 1;
+    while (*p) {
+        if (p[0] == '\r' && p[1] == '\n') {
+            len++;
+            p += 2;
+            continue;
+        }
+        if (p[0] == '\r' || p[0] == '\n')
+            len++;
+        p++;
+    }
+    p = buf;
+    char **r = malloc(sizeof(char *) * len + 1);
+    int i = 0;
+    while (*p) {
+        if (p[0] == '\r' && p[1] == '\n') {
+            p[0] = '\0';
+            p += 2;
+            r[i++] = p;
+            continue;
+        }
+        if (p[0] == '\r' || p[0] == '\n') {
+            p[0] = '\0';
+            r[i++] = p + 1;
+        }
+        p++;
+    }
+    r[i] = NULL;
+    return r;
+}
+
+/// @brief potato | read a source file
+/// @param file 
+/// @return 
+static char **read_source_file(char *file) {
+    FILE *fpointer = fopen(file, "r");
+    if (!fpointer)
+        return NULL;
+    struct stat st;
+    fstat(fileno(fpointer), &st);
+    char *buf = malloc(st.st_size + 1);
+    if (fread(buf, 1, st.st_size, fpointer) != st.st_size) {
+        fclose(fpointer);
+        return NULL;
+    }
+    fclose(fpointer);
+    buf[st.st_size] = '\0';
+    return split(buf);
+}
+
+/// @brief potato | print a specific line in a source file
+/// @param file 
+/// @param line 
+static void maybe_print_source_line(char *file, int line) {
+    if (!dumpsource)
+        return;
+    char **lines = map_get(source_lines, file);
+    if (!lines) {
+        lines = read_source_file(file);
+        if (!lines)
+            return;
+        map_put(source_lines, file, lines);
+    }
+    int len = 0;
+    for (char **p = lines; *p; p++)
+        len++;
+    emit_nostack("# %s", lines[line - 1]);
+}
+
+/// @brief potato | print a specific line in a source file
+/// @param node 
+static void maybe_print_source_loc(Node *node) {
+    if (!node->sourceLoc)
+        return;
+    char *file = node->sourceLoc->file;
+    long fileno = (long)map_get(source_files, file);
+    if (!fileno) {
+        fileno = map_len(source_files) + 1;
+        map_put(source_files, file, (void *)fileno);
+        //.file directive?
+        emit(".file %ld \"%s\"", fileno, quote_cstring(file));
+    }
+    char *loc = format(".loc %ld %d 0", fileno, node->sourceLoc->line);
+    if (strcmp(loc, last_loc)) {
+        emit("%s", loc);
+        maybe_print_source_line(file, node->sourceLoc->line);
+    }
+    last_loc = loc;
+}
+
+/// @brief potato | emit: load and check local variable initialization
+/// @param node 
+static void emit_lvar(Node *node) {
+    SAVE;
+    ensure_lvar_init(node);
+    emit_lload(node->ty, rbp, node->loff);
+}
+
+/// @brief potato | emit: load global variable
+/// @param node 
+static void emit_gvar(Node *node) {
+    SAVE;
+    emit_gload(node->ty, node->glabel, 0);
 }
