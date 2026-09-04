@@ -1257,24 +1257,31 @@ use a rootfinding-style method to procedurally copy
 
 */
 
-/// @brief emit: duplicate a struct in memory
+/// @brief potato | emit: duplicate a struct in memory
 /// @param left 
 /// @param right 
 static void emit_copy_struct(Node *left, Node *right) {
     push(rcx);
     push(tmp);
     emit_addr(right);
-    emit("mov #rax, #rcx");
+    emit("mov %d, %d", rcx, rax);
     emit_addr(left);
     int i = 0;
-    for (; i < left->ty->size; i += 8) {
-        //move 8 bytes at a time from rcx to rax
-        emit("movq %d(#rcx), #r11", i);
-        emit("movq #r11, %d(#rax)", i);
+    for (; i < left->ty->size; i += 1) {
+        //move 2 bytes at a time from rcx to rax
+        //emit("movq %d(#rcx), #r11", i);
+        //emit("movq #r11, %d(#rax)", i);
         
-        emit("mov %d, %d",)
+        //load data from rcx + i into temp, then 
+        //copy to the destination address in rax + i
+        emit("ldr %d, %d, %d", tmp, rcx, i);
+        emit("str %d, %d, %d", tmp, rax, i);
 
     }
+
+    //the ISA only uses 16-bit datasizes, so only one loop is needed.
+
+    /*
     //repeat for 4 bytes
     for (; i < left->ty->size; i += 4) {
         emit("movl %d(#rcx), #r11", i);
@@ -1285,6 +1292,125 @@ static void emit_copy_struct(Node *left, Node *right) {
         emit("movb %d(#rcx), #r11", i);
         emit("movb #r11, %d(#rax)", i);
     }
+    */
     pop(tmp);
     pop(rcx);
+}
+
+/// @brief potato | compare initialization offsets
+/// @param x 
+/// @param y 
+/// @return 
+static int cmpinit(const void *x, const void *y) {
+    Node *a = *(Node **)x;
+    Node *b = *(Node **)y;
+    return a->initoff - b->initoff;
+}
+
+/// @brief potato | blank unfilled fields of variable with at least one field init and fill passed fields
+/// @param inits 
+/// @param off 
+/// @param totalsize 
+static void emit_fill_holes(Vector *inits, int off, int totalsize) {
+    // If at least one of the fields in a variable are initialized,
+    // unspecified fields has to be initialized with 0.
+    int len = vec_len(inits);
+    Node **buf = malloc(len * sizeof(Node *));
+    for (int i = 0; i < len; i++)
+        buf[i] = vec_get(inits, i);
+    qsort(buf, len, sizeof(Node *), cmpinit);
+
+    int lastend = 0;
+    for (int i = 0; i < len; i++) {
+        Node *node = buf[i];
+        if (lastend < node->initoff)
+            emit_zero_filler(lastend + off, node->initoff + off);
+        lastend = node->initoff + node->totype->size;
+    }
+    emit_zero_filler(lastend + off, totalsize + off);
+}
+
+/// @brief potato | emit: variable declaration initialization. creates and saves a variable
+/// @param inits 
+/// @param off 
+/// @param totalsize 
+static void emit_decl_init(Vector *inits, int off, int totalsize) {
+    emit_fill_holes(inits, off, totalsize);
+    for (int i = 0; i < vec_len(inits); i++) {
+        Node *node = vec_get(inits, i);
+        assert(node->kind == AST_INIT);
+        bool isbitfield = (node->totype->bitsize > 0);
+        if (node->initval->kind == AST_LITERAL && !isbitfield) {
+            emit_save_literal(node->initval, node->totype, node->initoff + off);
+        } else {
+            emit_expr(node->initval);
+            emit_lsave(node->totype, node->initoff + off);
+        }
+    }
+}
+
+/// @brief potato | emit: variable instruction for ++x --x
+/// @param node 
+/// @param op 
+static void emit_pre_inc_dec(Node *node, char *op) {
+    emit_expr(node->operand);
+    //emit("%s %d, %d", op, node->ty->ptr ? node->ty->ptr->size : 1, rax);
+    emit("%s %d, %d, %d", op, rax, node->ty->ptr ? node->ty->ptr->size : 1, rax);
+    emit_store(node->operand);
+}
+
+//note: the increment and decrement instruction relies on 'op' strings being valid in the ISA.
+//there's no guarantee that they'll be valid. looking at their uses,
+//they only apply add or sub
+
+/// @brief potato | emit: variable instruction for x++ x--
+/// @param node 
+/// @param op 
+static void emit_post_inc_dec(Node *node, char *op) {
+    SAVE;
+    emit_expr(node->operand);
+    push(rax);
+    //emit("%s %d, %d", op, node->ty->ptr ? node->ty->ptr->size : 1, rax);
+    emit("%s %d, %d, %d", op, rax, node->ty->ptr ? node->ty->ptr->size : 1, rax);
+    emit_store(node->operand);
+    pop(rax);
+}
+
+/// @brief potato | sort amount of floating point versus int in a vector
+/// @param args 
+static void set_reg_nums(Vector *args) {
+    numgp = numfp = 0;
+    for (int i = 0; i < vec_len(args); i++) {
+        Node *arg = vec_get(args, i);
+        if (is_flotype(arg->ty))
+            numfp++;
+        else
+            numgp++;
+    }
+}
+
+/// @brief potato | emit: test then jump to label on equal
+/// @param label 
+static void emit_je(char *label) {
+    //emit("test #rax, #rax");
+    //set the bits in the status register, then seteq and jnz, in 
+    //absence of je.
+    push(tmp);
+    emit("cmp %d, %d", rax, zero);
+    //emit("je %s", label);
+    emit("seteq %d", rax);
+    emit("jnz %d, %s", rax, label);
+    pop(tmp);
+}
+
+/// @brief potato | emit: ASM label
+/// @param label 
+static void emit_label(char *label) {
+    emit("%s:", label);
+}
+
+/// @brief potato | emit: jump to label
+/// @param label 
+static void emit_jmp(char *label) {
+    emit("jmp %s", label);
 }
