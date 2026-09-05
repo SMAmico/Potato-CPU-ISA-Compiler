@@ -1,11 +1,5 @@
 // EX_ISA backend for 8cc compiler
 // Target: 4-bit opcodes, 16 registers, 16-bit words, 256-byte address space
-//
-// Memory layout:
-//   0x00-0xFF: code (256 bytes ROM)
-//   0x00-0xBF: global data (64 bytes)
-//   0xC0-0xFF: stack (64 bytes, grows downward from 0xFF)
-
 //this project uses the assembler below. all assembly instructions 
 //should be converted into this format.
 
@@ -160,7 +154,7 @@
 #define asm_tmp 14  //temp register exclusively for assembly to machine code translation. don't use
 #define tmp 13      //temp register for extended c translation
 #define sp 12       //stack pointer register
-#define fp 11       //frame pointer register
+#define frame_pointer 11 //frame pointer register
 #define gb 10       //global base register
 #define zero 0
 
@@ -172,7 +166,7 @@
 #define eax 5   //x86 accumulator register equivalent (32-bit)
 #define rsi 6   //x86 source index register equivalent
 #define rdi 7   //x86 destination index register equivalent
-#define rbp fp  //x86 base pointer register equivalent
+#define rbp frame_pointer //x86 base pointer register equivalent
 #define rsp sp  //x86 stack pointer register equivalent
 
 #define xmm0 8  //x86 floating point register equivalent (TEMP)
@@ -223,8 +217,11 @@ static void emit_decl_init(Vector *inits, int off, int totalsize);
 static void do_emit_data(Vector *inits, int size, int off, int depth);
 static void emit_data(Node *v, int off, int depth);
 
-///register byte-size: 1 byte registers x16
-#define REGAREA_SIZE 16
+/// @brief general-purpose and floating-point register lengths
+#define GPREG_LENGTH 2
+#define FPREG_LENGTH 4
+//6 GP registers (16 bits : rax, rbx, rcx, rdx, rsi, rdi), with xmm0 and xmm1 (32 bits each) as FP registers
+#define REGAREA_SIZE (6 * GPREG_LENGTH + 2 * FPREG_LENGTH)
 
 //map emit to emitf for file output
 #define emit(...)        emitf(__LINE__, "\t" __VA_ARGS__)
@@ -315,115 +312,121 @@ static void emit_nostack(char *fmt, ...) {
 }
 
 
-/// @brief overload: emits an assembly instruction bypassing the emitf format
-/// @param op 
-/// @param a 
-static void emit_asm(int op, int a) {
+/// @brief emit an EX_ISA instruction with opcode-specific operand count
+/// @param op
+/// @param a
+static void emit_asm(int op, int a, ...) {
+    va_list args;
+    va_start(args, a);
+    int b;
+    int c;
     switch (op) {
     case ins_hlt:
         emit("hlt");
-        return;
+        break;
     case ins_nop:
         emit("nop");
-        return;
+        break;
     case ins_jmp:
         emit("jmp %d", a);
-        return;
-    default:
-        error("Unknown EX_ISA opcode: %d", op);
-    }
-}
-
-/// @brief overload: emits an assembly instruction bypassing the emitf format
-/// @param op 
-/// @param a 
-/// @param b 
-static void emit_asm(int op, int a, int b) {
-    switch (op) {
-    case ins_str:
-        emit("str %d, %d, %d", a, b, 0);
-        return;
-    case ins_ldr:
-        emit("ldr %d, %d, %d", a, b, 0);
-        return;
-    case ins_hlt:
-        emit("hlt");
-        return;
+        break;
     case ins_movi:
-        emit("movi %d, %d", a, b);
-        return;
     case ins_mov:
-        emit("mov %d, %d", a, b);
-        return;
-    case ins_jmp:
-        emit("jmp %d", a);
-        return;
-    case ins_jnz:
-        emit("jnz %d, %d, %d", a, b, 0);
-        return;
-    default:
-        error("Unknown EX_ISA opcode: %d", op);
-    }
-}
-
-/// @brief emits an assembly instruction bypassing the emitf format
-/// @param op 
-/// @param a 
-/// @param b 
-/// @param c 
-static void emit_asm(int op, int a, int b, int c) {
-    switch (op) {
+        b = va_arg(args, int);
+        if (op == ins_movi)
+            emit("movi %d, %d", a, b);
+        else
+            emit("mov %d, %d", a, b);
+        break;
     case ins_shr:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("shr %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_str:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("str %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_ldr:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("ldr %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_add:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("add %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_addi:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("addi %d, %d, %d", a, b, c);
-        return;
+        break;
+    case ins_sub:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
+        emit("sub %d, %d, %d", a, b, c);
+        break;
     case ins_subi:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("subi %d, %d, %d", a, b, c);
-        return;
-    case ins_hlt:
-        emit("hlt");
-        return;
+        break;
     case ins_or:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("or %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_ori:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("ori %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_and:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("and %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_andi:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("andi %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_xor:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("xor %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_jlt:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("jlt %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_shl:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("shl %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_mult:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("mult %d, %d, %d", a, b, c);
-        return;
+        break;
     case ins_multi:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
         emit("multi %d, %d, %d", a, b, c);
-        return;
+        break;
+    case ins_jnz:
+        b = va_arg(args, int);
+        c = va_arg(args, int);
+        emit("jnz %d, %d, %d", a, b, c);
+        break;
     default:
         error("Unknown EX_ISA opcode: %d", op);
     }
+    va_end(args);
 }
 
 /// @brief convert data size to the matching register type
@@ -800,15 +803,14 @@ static void do_emit_assign_deref(Type *ty, int off) {
     then store the value to the address in rax + offset,
     then pop rcx back to the stack)
     */
-    //emit("mov (#rsp), #rcx");
-    emit("STR %d, %d, 0", rcx, rsp);
+    // The address was pushed before the value expression was evaluated.
+    emit_asm(ins_ldr, rcx, sp, 0);
 
-    char *reg = get_int_reg(ty, 'c');
+    int reg = get_int_reg(ty, 'a');
     if (off)
-        //emit("mov #%s, %d(#rax)", reg, off);
-        emit("STR %d, %d, %d", reg, rax, off);
+        emit_asm(ins_str, reg, rcx, off);
     else
-        emit("STR %d, %d, 0", reg, rax);
+        emit_asm(ins_str, reg, rcx, 0);
     pop(rax);
 }
 
@@ -816,7 +818,7 @@ static void do_emit_assign_deref(Type *ty, int off) {
 /// @param var 
 static void emit_assign_deref(Node *var) {
     SAVE;
-    push("rax");
+    push(rax);
     emit_expr(var->operand);
     do_emit_assign_deref(var->operand->ty->ptr, 0);
 }
@@ -835,7 +837,7 @@ static void emit_pointer_arith(char kind, Node *left, Node *right) {
     if (size > 1) {
         emit("multi %d, %d, %d", rax, rax, size);
     }
-    emit("mov %d, %d, %d", rax, rax, rcx);
+    emit_asm(ins_mov, rcx, rax);
     pop(rax);
     switch (kind) {
     case '+': emit("add %d, %d, %d", rcx, rax, rax); break;
@@ -852,9 +854,8 @@ static void emit_pointer_arith(char kind, Node *left, Node *right) {
 /// @param end 
 static void emit_zero_filler(int start, int end) {
     SAVE;
-    for (; start <= end - 4; start += 4)
-        //emit("movl $0, %d(#rbp)", start);
-        emit("STR %d, %d, %d", zero, rbp, start);
+    for (; start < end; start++)
+        emit_asm(ins_str, zero, rbp, start);
     /*
     we don't have a memory unit apart from 16 bit, so all fills
     and variables will operate in 16 bit units regardless.
@@ -969,10 +970,10 @@ static void emit_to_bool(Type *ty) {
         emit("setne %d", rax);
         pop_xmm(xmm1);
     } else {
-        emit("cmp $0, #rax");
+        emit("cmp %d, %d", rax, zero);
         emit("setne %d", rax);
     }
-    emit("mov %d, %d", rax, eax);
+    emit_asm(ins_mov, rax, rax);
 }
 
 /// @brief potato | emit: compare local variable to instance (float specific)
@@ -995,17 +996,13 @@ static void emit_comp(char *inst, char *usiginst, Node *node) {
         push(rax);
         emit_expr(node->right);
         pop(rcx);
-        int kind = node->left->ty->kind;
-        if (kind == KIND_LONG || kind == KIND_LLONG)
-          emit("cmp rax, rcx");
-        else
-          emit("cmp eax, ecx");
+                emit("cmp %d, %d", rax, rcx);
     }
     if (is_flotype(node->left->ty) || node->left->ty->usig)
-        emit("%s rax", usiginst);
+        emit("%s %d", usiginst, rax);
     else
-        emit("%s rax", inst);
-    emit("mov rax, eax");
+        emit("%s %d", inst, rax);
+    emit_asm(ins_mov, rax, rax);
 }
 
 /*
@@ -1024,8 +1021,8 @@ static void emit_binop_int_arith(Node *node) {
     case '-': op = "sub"; break;
     case '*': op = "mult"; break;
     case '^': op = "xor"; break;
-    case OP_SAL: op = "sal"; break;
-    case OP_SAR: op = "sar"; break;
+    case OP_SAL: op = "shl"; break;
+    case OP_SAR: op = "shr"; break;
     case OP_SHR: op = "shr"; break;
     case '/': case '%': break;
     default: error("invalid operator '%d'", node->kind);
@@ -1033,7 +1030,7 @@ static void emit_binop_int_arith(Node *node) {
     emit_expr(node->left);
     push(rax);
     emit_expr(node->right);
-    emit("mov rax, rcx");
+    emit_asm(ins_mov, rcx, rax);
     pop(rax);
     if (node->kind == '/' || node->kind == '%') {
         if (node->ty->usig) {
@@ -1122,19 +1119,16 @@ in the ISA, there's no assembly leave or return instruction.
 we just have to manually pop the stack and return.
 */
 
-/// @brief potato | emit: return call
+/// @brief  emit: return call
 static void emit_ret() {
     SAVE;
-    emit("leave");
-    emit("ret");
-    //set stack pointer to the current base pointer,
-    //then pop the old bsae pointer from the stack to restore it.
-    emit("mov rsp, rbp");
-    pop(rbp);
-
-    //return
-
-    pop(pc);
+    // The existing frame convention stores caller FP at FP[0] and the
+    // return PC at FP[1]. Restore the frame and jump through that PC.
+    emit_asm(ins_mov, sp, frame_pointer);
+    emit_asm(ins_ldr, frame_pointer, sp, 0);
+    emit_asm(ins_ldr, tmp, sp, 1);
+    emit_asm(ins_addi, sp, sp, 2);
+    emit_asm(ins_jmp, tmp);
 }
 
 /// @brief potato | emit: binop comparison (LT LE EQ NE)
@@ -1174,26 +1168,30 @@ static void emit_save_literal(Node *node, Type *totype, int off) {
     // this allows us to do conversion and storage in one line.
     case KIND_BOOL:{
         //emit("movb $%d, %d(#rbp)", !!node->ival, off);
-        emit("STR %d, %d, %d", !!node->ival, rbp, off);
+        emit_asm(ins_movi, rax, !!node->ival);
+        emit_asm(ins_str, rax, rbp, off);
         break;
     }  
     //chars are also stored as a byte
     case KIND_CHAR:{
         //emit("movb $%d, %d(#rbp)", node->ival, off);
-        emit("STR %d, %d, %d", node->ival, rbp, off);
+        emit_asm(ins_movi, rax, node->ival);
+        emit_asm(ins_str, rax, rbp, off);
         
         break;
     }
     //shorts are stored as a half-word. (technically that's all we have)
     case KIND_SHORT: {
         //emit("movw $%d, %d(#rbp)", node->ival, off);
-        emit("STR %d, %d, %d", node->ival, rbp, off);
+        emit_asm(ins_movi, rax, node->ival);
+        emit_asm(ins_str, rax, rbp, off);
         break;
     }
     //ints are stored as a lower word (32 bits). we still store the whole 16-bit register.
     case KIND_INT: {
         //emit("movl $%d, %d(#rbp)", node->ival, off);
-        emit("STR %d, %d, %d", node->ival, rbp, off);
+        emit_asm(ins_movi, rax, node->ival);
+        emit_asm(ins_str, rax, rbp, off);
         break;
     }
     //longs, long longs and pointers are stored as two words, ie 64 bits split into two 32-bit words.
@@ -1203,8 +1201,10 @@ static void emit_save_literal(Node *node, Type *totype, int off) {
     case KIND_PTR: {
         //emit("movl $%lu, %d(#rbp)", ((uint64_t)node->ival) & ((1L << 32) - 1), off);
         //emit("movl $%lu, %d(#rbp)", ((uint64_t)node->ival) >> 32, off + 4);
-        emit("STR %d, %d, %d", ((uint64_t)node->ival) & ((1L << 32) - 1), rbp, off);
-        emit("STR %d, %d, %d", ((uint64_t)node->ival) >> 32, rbp, off + 1);
+        emit_asm(ins_movi, rax, (int)((uint64_t)node->ival & 0xFFFF));
+        emit_asm(ins_str, rax, rbp, off);
+        emit_asm(ins_movi, rax, (int)(((uint64_t)node->ival >> 16) & 0xFFFF));
+        emit_asm(ins_str, rax, rbp, off + 1);
         break;
     }
     //floats are stored as one word.
@@ -1214,7 +1214,8 @@ static void emit_save_literal(Node *node, Type *totype, int off) {
     case KIND_FLOAT: {
         float fval = node->fval;
         //emit("movl $%u, %d(#rbp)", *(uint32_t *)&fval, off);
-        emit("STR %d, %d, %d", *(uint32_t *)&fval, rbp, off);
+        emit_asm(ins_movi, rax, (int)(*(uint32_t *)&fval & 0xFFFF));
+        emit_asm(ins_str, rax, rbp, off);
         break;
     }
     //doubles are stored similarly, but as two words through a uint64.
@@ -1223,8 +1224,11 @@ static void emit_save_literal(Node *node, Type *totype, int off) {
     case KIND_LDOUBLE: {
         //emit("movl $%lu, %d(#rbp)", *(uint64_t *)&node->fval & ((1L << 32) - 1), off);
         //emit("movl $%lu, %d(#rbp)", *(uint64_t *)&node->fval >> 32, off + 4);
-        emit("STR %d, %d, %d", *(uint64_t *)&node->fval & ((1L << 32) - 1), rbp, off);
-        emit("STR %d, %d, %d", *(uint64_t *)&node->fval >> 32, rbp, off + 1);
+        uint64_t bits = *(uint64_t *)&node->fval;
+        emit_asm(ins_movi, rax, (int)(bits & 0xFFFF));
+        emit_asm(ins_str, rax, rbp, off);
+        emit_asm(ins_movi, rax, (int)((bits >> 16) & 0xFFFF));
+        emit_asm(ins_str, rax, rbp, off + 1);
         break;
     }
     //default case.
@@ -1256,8 +1260,9 @@ static void emit_addr(Node *node) {
         //use the global label and the instruction pointer to
         //find the absolute address.
         //emit("lea %s(#rip), #rax", node->glabel);
-        //add to the instruction pointer
-        emit("addi %d, %d, %d", rax, pc, node->glabel);
+        // Data labels are in the separate data address space.
+        emit_asm(ins_mov, rax, zero);
+        emit("movi %d, %s", rax, node->glabel);
         break;
     case AST_DEREF:
         //if we want to dereference a pointer,
@@ -1272,8 +1277,8 @@ static void emit_addr(Node *node) {
     case AST_FUNCDESG:
         //emit("lea %s(#rip), #rax", node->fname);
 
-        //lea pseudo-op
-        emit("addi %d, %d, %d", rax, pc, node->fname);
+        emit_asm(ins_mov, rax, zero);
+        emit("movi %d, %s", rax, node->fname);
         break;
     default:
         error("internal error: %s", node2s(node));
@@ -1391,7 +1396,7 @@ static void set_reg_nums(Vector *args) {
     }
 }
 
-/// @brief potato | emit: test then jump to label on equal
+/// @brief potato | emit: test rax then jump to label on equal
 /// @param label 
 static void emit_je(char *label) {
     emit("jz %d, %s", rax, label);
@@ -1490,8 +1495,8 @@ static void emit_literal(Node *node) {
         }
         //load the address of the string to rax
         //emit("lea %s(#rip), #rax", node->slabel);
-        //add to the instruction pointer
-        emit("add %d, %d, %d", rax, pc, node->slabel);
+        emit_asm(ins_mov, rax, zero);
+        emit("movi %d, %s", rax, node->slabel);
         break;
     }
     default:
@@ -1617,29 +1622,19 @@ static void emit_builtin_return_address(Node *node) {
     emit_expr(vec_head(node->args));
     char *loop = make_label();
     char *end = make_label();
-    char *is_zero = make_label();
-    char *not_zero = make_label();
     //backup base pointer to tmp
     emit("mov %d, %d", rbp, tmp);
     //make a looping label
     emit_label(loop);
-    //emit("test #rax, #rax");
-
-    //jank to get je to work.
-    //if rax is not zero, jump to end
-    emit("jnz %d, %s", rax, not_zero);
-    emit_jmp(end);
-    emit_label(not_zero);
-    //if it isn't:
-    //emit("mov (#r11), #r11");
-    emit("str %d, %d", tmp, tmp);
-    //emit("sub $1, #rax");
-    //decrement rax by 1
+    //If the requested frame is reached, return its saved address.
+    emit_je(end);
+    //Walk to the caller's frame and decrement the requested depth.
+    emit("ldr %d, %d, %d", tmp, tmp, 0);
     emit("subi %d, %d, %d", rax, rax, 1);
     emit_jmp(loop);
     emit_label(end);
-    emit("mov 8(#r11), #rax");
-    emit("str %d, %d, %d", rax, tmp, 8);
+    //The return address follows the saved frame pointer (word-addressed).
+    emit("ldr %d, %d, %d", rax, tmp, 1);
     pop(tmp);
 }
 
@@ -1656,3 +1651,68 @@ static void emit_builtin_reg_class(Node *node) {
     else
         emit("movi %d, %d", eax, 0);
 }
+
+// -- 9/5/26 start --
+
+/// @brief potato | emit: copy variables into assembly registers
+/// @param node 
+static void emit_builtin_va_start(Node *node) {
+    SAVE;
+    assert(vec_len(node->args) == 1);
+    emit_expr(vec_head(node->args));
+    push(rcx);
+    //store the number of general-purpose variables (2 bytes each)
+    //emit("movl $%d, (#rax)", numgp * 8);
+    emit_asm(ins_movi, rcx, numgp * 2);
+    emit_asm(ins_str, rcx, rax, 0);
+
+    //store the number of floating-point variables
+
+    /*
+     important note: there is no FP support in the current implementation,
+     which is why this stores only 2-byte long data instead of full 16-byte floats
+    */
+    //emit("movl $%d, 4(#rax)", 48 + numfp * 16);
+    emit_asm(ins_movi, rcx, 48 + numfp * 2);
+    emit_asm(ins_str, rcx, rax, 2);
+
+    //calculate the address of the register save area
+    //emit("lea %d(#rbp), #rcx", -REGAREA_SIZE);
+    emit("addi %d, %d, %d", rcx, rbp, -REGAREA_SIZE);
+
+    //store the address of the register save area
+    //emit("mov #rcx, 16(#rax)");
+    emit_asm(ins_str, rcx, rax, 8);
+    pop(rcx);
+}
+
+/*
+    --FUNCTION CALLING--
+The ISA does not have as many usable registers as x86 does, so
+function arguments will have to change. there are 6 registers that can be
+used for GP-length arguments, combined with 2 registers for FP-length arguments.
+the caller will save rax, rcx, rdx, xmm0, xmm1, and tmp before jumping.
+the callee will save rbx, rsi, rdi, fp and gb as is typical.
+*/
+
+/// @brief potato | emit the builtin parameters 
+/// of a function (return address, register class, and variables)
+/// @param node 
+/// @return 
+static bool maybe_emit_builtin(Node *node) {
+    SAVE;
+    if (!strcmp("__builtin_return_address", node->fname)) {
+        emit_builtin_return_address(node);
+        return true;
+    }
+    if (!strcmp("__builtin_reg_class", node->fname)) {
+        emit_builtin_reg_class(node);
+        return true;
+    }
+    if (!strcmp("__builtin_va_start", node->fname)) {
+        emit_builtin_va_start(node);
+        return true;
+    }
+    return false;
+}
+
