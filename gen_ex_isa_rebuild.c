@@ -30,7 +30,7 @@
       - Tokens are separated by whitespace and/or commas.
       - Comments may start with ';', '//' or '#'.
     - Registers are R0..R15 (case-insensitive).
-    - Control-flow labels (JMP/JLT label form) must be .text labels.
+    - Control-flow labels (JMP/JLT and conditional pseudo-branch forms) must be .text labels.
       - Memory-address labels (STR/LDR label form) must be .data labels.
 
     .data directives (written to the separate data output/MIF described above):
@@ -50,9 +50,13 @@
     Instruction formats implemented :
 
       STR rA, rB/LABEL, soff (store RF[rA] -> D[RF[rB] + soff])
-          -> 0001 raaa rbbb soff  pseudo-ins variant accepts 16-bit word offset using pseudoinstruction
+          -> 0001 raaa rbbb soff  offsets are signed 16-bit word displacements; larger values use ASM_TMP
       LDR rA, rB/LABEL, soff (load D[RF[rB] + soff] -> RF[rA])
-          -> 0010 raaa rbbb soff  pseudo-ins variant accepts 16-bit word offset using pseudoinstruction
+          -> 0010 raaa rbbb soff  offsets are signed 16-bit word displacements; larger values use ASM_TMP
+
+      COPY rSrc, rDest[, count] (copy count words from RF[rSrc] to RF[rDest])
+          -> pseudo-instruction: expands to LDR/STR pairs using ASM_TMP; omitted count means one word
+             count is a positive 16-bit value and source/destination registers are restored for long copies
 
       ADD rA, rB, rC (rA = rB + rC)
           -> 0011 raaa rbbb rccc
@@ -85,6 +89,13 @@
           -> 1010 raaa rbbb bbbb
       JLT rA, rB, offset (PC = PC + offset if rA < rB)
           -> 1011 raaa rbbb bbbb    (4-bit signed offset relative to next instr)
+      JZ rA, label (branch if rA == 0)
+      JEQ rA, rB_or_imm, label (branch if rA == rB_or_imm)
+      JNE rA, rB_or_imm, label (branch if rA != rB_or_imm)
+      JLE rA, rB_or_imm, label (branch if signed rA <= rB_or_imm)
+      JGT rA, rB_or_imm, label (branch if signed rA > rB_or_imm)
+      JGE rA, rB_or_imm, label (branch if signed rA >= rB_or_imm)
+          -> pseudo-instructions: CMP, SETcc, and JNZ via ASM_TMP; immediates are signed 16-bit values
 
       CMP rA, rB (capture Z, N, and V from signed rA - rB)
           -> 1110 raaa rbbb 0000
@@ -822,8 +833,7 @@ static void emit_pointer_arith(char kind, Node *left, Node *right) {
     emit_expr(right);
     int size = left->ty->ptr->size;
     if (size > 1) {
-        emit("movi %d, %d", tmp, size);
-        emit("mult %d, %d, %d", rax, rax, tmp);
+        emit("multi %d, %d, %d", rax, rax, size);
     }
     emit("mov %d, %d, %d", rax, rax, rcx);
     pop(rax);
@@ -1282,38 +1292,10 @@ use a rootfinding-style method to procedurally copy
 /// @param right 
 static void emit_copy_struct(Node *left, Node *right) {
     push(rcx);
-    push(tmp);
     emit_addr(right);
     emit("mov %d, %d", rcx, rax);
     emit_addr(left);
-    int i = 0;
-    for (; i < left->ty->size; i += 1) {
-        //move 2 bytes at a time from rcx to rax
-        //emit("movq %d(#rcx), #r11", i);
-        //emit("movq #r11, %d(#rax)", i);
-        
-        //load data from rcx + i into temp, then 
-        //copy to the destination address in rax + i
-        emit("ldr %d, %d, %d", tmp, rcx, i);
-        emit("str %d, %d, %d", tmp, rax, i);
-
-    }
-
-    //the ISA only uses 16-bit datasizes, so only one loop is needed.
-
-    /*
-    //repeat for 4 bytes
-    for (; i < left->ty->size; i += 4) {
-        emit("movl %d(#rcx), #r11", i);
-        emit("movl #r11, %d(#rax)", i);
-    }
-    //repeat for single bytes
-    for (; i < left->ty->size; i++) {
-        emit("movb %d(#rcx), #r11", i);
-        emit("movb #r11, %d(#rax)", i);
-    }
-    */
-    pop(tmp);
+    emit("copy %d, %d, %d", rcx, rax, align(left->ty->size, 2) / 2);
     pop(rcx);
 }
 
@@ -1412,15 +1394,7 @@ static void set_reg_nums(Vector *args) {
 /// @brief potato | emit: test then jump to label on equal
 /// @param label 
 static void emit_je(char *label) {
-    //emit("test #rax, #rax");
-    //set the bits in the status register, then seteq and jnz, in 
-    //absence of je.
-    push(tmp);
-    emit("cmp %d, %d", rax, zero);
-    //emit("je %s", label);
-    emit("seteq %d", rax);
-    emit("jnz %d, %s", rax, label);
-    pop(tmp);
+    emit("jz %d, %s", rax, label);
 }
 
 /// @brief potato | emit: ASM label
