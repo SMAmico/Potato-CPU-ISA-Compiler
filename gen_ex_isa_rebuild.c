@@ -186,7 +186,8 @@ bool dumpstack = false;
 bool dumpsource = true;
 
 //x86 register names: do we need them?
-static char *REGS[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+static char *REGS[] = {rax, rbx, rcx, rdx, rdi, rsi};
+static char *FREGS[] = {xmm0, xmm1};
 static char *SREGS[] = {"dil", "sil", "dl", "cl", "r8b", "r9b"};
 static char *MREGS[] = {"edi", "esi", "edx", "ecx", "r8d", "r9d"};
 //tab length
@@ -469,27 +470,28 @@ static int align(int n, int m) {
 /// @param reg 
 static void push_xmm(int reg) {
     SAVE;
-    //subtract 1 from stack pointer (word address in direct memory mapping)
-    emit("subi %d, %d, %d", sp, sp, 1); //PROBLEM: sp only contains a register value, isa can only write direct values
+    //FPs will use DWORDS, or 2 words
+    //subtract 2 from stack pointer (word address in direct memory mapping)
+    emit("subi %d, %d, %d", sp, sp, 2); //PROBLEM: sp only contains a register value, isa can only write direct values
                                          //SOLUTION: make str and ldr pull addresses from registers instead of
                                          // direct memory mapping, expanding address space to 16 bit 
                                          //FIXED: this is now fixed in the arch
     //emit("sub $8, #rsp");
     //then store register at stack pointer
-    emit_asm(ins_str, reg, sp, 0);
+    emit_asm(ins_str, FREGS[reg], sp, 0);
     //emit("movsd #xmm%d, (#rsp)", reg);
-    stackpos += 1;
+    stackpos += 2;
 }
 
 /// @brief potato | emits: pop a register from the stack, update sp manually
 /// @param reg 
 static void pop_xmm(int reg) {
     SAVE;
-    emit_asm(ins_ldr, reg, sp, 0);
+    emit_asm(ins_ldr, FREGS[reg], sp, 0);
     //add 1 to stack pointer
     //emit("movsd (#rsp), #xmm%d", reg);
-    emit("addi %d, %d, %d", sp, sp, 1);
-    stackpos -= 1;
+    emit("addi %d, %d, %d", sp, sp, 2);
+    stackpos -= 2;
     assert(stackpos >= 0);
 }
 
@@ -999,6 +1001,7 @@ static void emit_comp(char *inst, char *usiginst, Node *node) {
                 emit("cmp %d, %d", rax, rcx);
     }
     if (is_flotype(node->left->ty) || node->left->ty->usig)
+    //THIS ISNT SUPPORTED INSTRUCTION
         emit("%s %d", usiginst, rax);
     else
         emit("%s %d", inst, rax);
@@ -1716,3 +1719,346 @@ static bool maybe_emit_builtin(Node *node) {
     return false;
 }
 
+// --9/7/26 start --
+
+/// @brief potato | sort function inputs into registers and push overflow
+/// @param ints 
+/// @param floats 
+/// @param rest 
+/// @param args 
+static void classify_args(Vector *ints, Vector *floats, Vector *rest, Vector *args) {
+    SAVE;
+    //start at 0 input arguments
+    int ireg = 0, xreg = 0;
+    //6 gp registers and 2 fp registers available.
+    int imax = 6, xmax = 2;
+    //traverse down the vector of input arguments
+    for (int i = 0; i < vec_len(args); i++) {
+        //we vectorize up to 6 GP registers and 2 FP registers.
+        //anything more must get pushed to stack
+        Node *v = vec_get(args, i);
+        if (v->ty->kind == KIND_STRUCT) {
+            //structs always go on the stack
+            //since they're too large for registers
+            vec_push(rest, v);
+        } else if (is_flotype(v->ty)) {
+            //add FP context to vector
+            vec_push((xreg++ < xmax) ? floats : rest, v);
+        } else {
+            //add GP context to vector
+            vec_push((ireg++ < imax) ? ints : rest, v);
+        }
+    }
+}
+
+/// @brief potato | save function register arguments to stack
+/// @param nints 
+/// @param nfloats 
+static void save_arg_regs(int nints, int nfloats) {
+    SAVE;
+    //make sure there are not more argument registers than available
+    assert(nints <= 6);
+    assert(nfloats <= 2);
+    for (int i = 0; i < nints; i++)
+        //push the input argument regs we have filled, ascending
+        push(REGS[i]);
+    for (int i = 0; i < nfloats; i++)
+        //push whatever fp regs are filled, ascending
+        push_xmm(i);
+}
+
+/// @brief potato | restore function argument registers from stack
+/// @param nints 
+/// @param nfloats 
+static void restore_arg_regs(int nints, int nfloats) {
+    SAVE;
+    for (int i = nfloats - 1; i > 0; i--)
+        pop_xmm(i);
+    for (int i = nints - 1; i >= 0; i--)
+        pop(REGS[i]);
+}
+
+/// @brief potato | emit: push all function arguments to the stack
+/// @param vals 
+/// @return 
+static int emit_args(Vector *vals) {
+    SAVE;
+    //size of arguments pushed to the stack
+    int r = 0;
+    //traverse argument vector
+    for (int i = 0; i < vec_len(vals); i++) {
+        //make a new node of the vector at index i
+        Node *v = vec_get(vals, i);
+        //if struct, push address and 
+        if (v->ty->kind == KIND_STRUCT) {
+            //get the address of the struct
+            emit_addr(v);
+            //then push the whole struct to the stack
+            r += push_struct(v->ty->size);
+        //for floats, push the floating-point argument registers
+        } else if (is_flotype(v->ty)) {
+            //fetch the agrument and pull it to a register
+            emit_expr(v);
+            //then push to stack
+            push_xmm(0);
+            //each FP will be 4 bytes (2 addresses in word-addressed memory)
+            r += 2;
+        //other types 
+        } else {
+            //fetch into register
+            emit_expr(v);
+            //then push to stack
+            push(rax);
+            r += 1;
+        }
+    }
+    return r;
+}
+
+/// @brief potato | pop n integer arguments from stack
+/// @param nints 
+static void pop_int_args(int nints) {
+    SAVE;
+    for (int i = nints - 1; i >= 0; i--)
+        pop(REGS[i]);
+}
+
+/// @brief potato | pop n floating-point arguments from stack
+/// @param nfloats 
+static void pop_float_args(int nfloats) {
+    SAVE;
+    for (int i = nfloats - 1; i >= 0; i--)
+        pop_xmm(i);
+}
+
+/// @brief emit: convert return data to boolean
+/// @param ty 
+static void maybe_booleanize_retval(Type *ty) {
+    // if the return type is boolean, convert the return value to 0 or 1
+    //rax is the default register for return data, so
+    //a boolean (pass/fail) goes there for us to examine.
+    //since there's no shorter registers to move or convert from, 
+    //we could just stall a cycle lol but
+    if (ty->kind == KIND_BOOL) {
+        //emit("mov %d, %d", rax, rax);
+    }
+}
+
+/*
+    --FUNCTION CALLING--
+The ISA does not have as many usable registers as x86 does, so
+function arguments will have to change. there are 6 registers that can be
+used for GP-length arguments, combined with 2 registers for FP-length arguments.
+the caller will sort and save as many registers as the function needs before calling.
+then the 
+*/
+
+/// @brief potato | emit: call function: the big kahuna
+/// @param node 
+static void emit_func_call(Node *node) {
+    SAVE;
+    int opos = stackpos;
+    bool isptr = (node->kind == AST_FUNCPTR_CALL);
+    Type *ftype = isptr ? node->fptr->ty->ptr : node->ftype;
+
+    //make buckets for data types
+    Vector *ints = make_vector();
+    Vector *floats = make_vector();
+    Vector *rest = make_vector();
+    classify_args(ints, floats, rest, node->args);
+    save_arg_regs(vec_len(ints), vec_len(floats));
+
+    // if the stack is unaligned(which won't happen since we
+    // use globally fixed word alignment, but FP support may change that),
+    // then add apdding to the stack pointer.
+    bool padding = 0; //stackpos % 16;
+    if (padding) {
+        emit("subi %d, %d", sp, 1);
+        stackpos += 1;
+    }
+
+    //calculate size and push overflow arguments to the stack
+    int restsize = emit_args(vec_reverse(rest));
+    if (isptr) {
+        emit_expr(node->fptr);
+        push(rax);
+    }
+
+    //initialize the integer arguments into the stack
+    emit_args(ints);
+    //initialize the float arguments into the stack
+    emit_args(floats);
+    //pop the float args from the stack
+    pop_float_args(vec_len(floats));
+    //pop the integer args from the stack
+    pop_int_args(vec_len(ints));
+
+    //if the function is a function pointer, pop the address into r11
+    if (isptr) pop(tmp);
+    if (ftype->hasva)
+        emit("movi %d %d", eax, vec_len(floats));
+
+    //if the function is a function pointer, jump to the function
+    if (isptr) {
+        push(pc);
+        emit("jmp %d", tmp);
+    }
+    else {
+        //if the function is not a pointer,
+        //we jump to the function name instead.
+        push(pc);
+        emit("jmp %s", node->fname);
+        maybe_booleanize_retval(node->ty);
+    }
+    if (restsize > 0) {
+        //if there are arguments on the stack,
+        //we remove them from the stack and restore the
+        //original stack position.
+        emit_asm(ins_addi, sp, sp, restsize);
+        stackpos -= restsize;
+    }
+    
+    //if there was padding, we undo it.
+    if (padding) {
+        emit("addi %d, %d", stackpos, 1);
+        stackpos -= 1;
+    }
+
+    //then we restore the argument registers.
+    restore_arg_regs(vec_len(ints), vec_len(floats));
+    //and ensure the stack has returned to its original position.
+    assert(opos == stackpos);
+}
+
+/// @brief potato | emit: declare variable
+/// @param node 
+static void emit_decl(Node *node) {
+    SAVE;
+    if (!node->declinit)
+        return;
+    emit_decl_init(node->declinit, node->declvar->loff, node->declvar->ty->size);
+}
+
+/// @brief potato | emit: convert expression between types
+/// @param node 
+static void emit_conv(Node *node) {
+    SAVE;
+    emit_expr(node->operand);
+    emit_load_convert(node->ty, node->operand->ty);
+}
+
+/// @brief potato | emit: dereference a variable pointer
+/// @param node 
+static void emit_deref(Node *node) {
+    SAVE;
+    emit_expr(node->operand);
+    emit_lload(node->operand->ty->ptr, rax, 0);
+    emit_load_convert(node->ty, node->operand->ty->ptr);
+}
+
+/// @brief potato | emit: ternary statement
+/// @param node 
+static void emit_ternary(Node *node) {
+    SAVE;
+    emit_expr(node->cond);
+    char *ne = make_label();
+    emit_je(ne);
+    if (node->then)
+        emit_expr(node->then);
+    if (node->els) {
+        char *end = make_label();
+        emit_jmp(end);
+        emit_label(ne);
+        emit_expr(node->els);
+        emit_label(end);
+    } else {
+        emit_label(ne);
+    }
+}
+
+/// @brief potato | emit: jump statement
+/// @param node 
+static void emit_goto(Node *node) {
+    SAVE;
+    assert(node->newlabel);
+    emit_jmp(node->newlabel);
+}
+
+/// @brief potato | emit: return statement
+/// @param node 
+static void emit_return(Node *node) {
+    SAVE;
+    if (node->retval) {
+        emit_expr(node->retval);
+        maybe_booleanize_retval(node->retval->ty);
+    }
+    emit_ret();
+}
+
+/// @brief potato | emit: compound statement
+/// @param node 
+static void emit_compound_stmt(Node *node) {
+    SAVE;
+    for (int i = 0; i < vec_len(node->stmts); i++)
+        emit_expr(vec_get(node->stmts, i));
+}
+
+
+//TODO: check if the test instructions execute the correct
+//underlying logical comparison
+
+
+/// @brief emit: short circuit logical AND(&&) operation
+/// @param node 
+static void emit_logand(Node *node) {
+    SAVE;
+    //this function is useful because it skips the second operand if
+    //the first node evaluates to zero.
+    char *end = make_label();
+    emit_expr(node->left);
+    //logical and
+
+    emit("cmp %d, %d", rax, rax);
+    emit("mov %d, %d", rax, zero);
+    emit("je %s", end);
+
+    emit_expr(node->right);
+
+    emit("cmp %d, %d", rax, rax);
+    emit("mov %d, %d", rax, zero);
+    emit("je %s", end);
+    emit("movi %d, %d", rax, 1);
+
+    emit_label(end);
+}
+
+/// @brief emit: logical OR operation
+/// @param node 
+static void emit_logor(Node *node) {
+    SAVE;
+    char *end = make_label();
+    emit_expr(node->left);
+
+    emit("cmp %d, %d", rax, rax);
+    emit("movi, rax, 1");
+    emit("jne %s", end);
+
+    emit_expr(node->right);
+
+    emit("cmp %d, %d", rax, rax);
+    emit("movi, rax, 1");
+    emit("jne %s", end);
+    emit("mov %d, %d", rax, zero);
+
+    emit_label(end);
+}
+
+/// @brief emit: logical NOT operation
+/// @param node 
+static void emit_lognot(Node *node) {
+    SAVE;
+    emit_expr(node->operand);
+    emit("cmp $0, #rax");
+    emit("sete #al");
+    emit("movzb #al, #eax");
+}
