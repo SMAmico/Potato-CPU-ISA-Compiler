@@ -2053,12 +2053,167 @@ static void emit_logor(Node *node) {
     emit_label(end);
 }
 
-/// @brief emit: logical NOT operation
+// -- 9/10/26 start --
+
+/// @brief potato | emit: logical NOT operation
 /// @param node 
 static void emit_lognot(Node *node) {
     SAVE;
     emit_expr(node->operand);
-    emit("cmp $0, #rax");
-    emit("sete #al");
-    emit("movzb #al, #eax");
+    //copy the x86 assembly, but in EX_ISA
+    emit("ins_cmp %d %d", rax, zero);
+    emit("ins_seteq %d", rax);
+}
+
+/// @brief potato | emit: bitwise AND operation
+/// @param node 
+static void emit_bitand(Node *node) {
+    SAVE;
+    emit_expr(node->left);
+    push(rax);
+    emit_expr(node->right);
+    pop(rcx);
+    emit("and %d, %d, %d", rax, rcx, rax);
+}
+
+
+/// @brief potato | emit: bitwise OR operation
+/// @param node 
+static void emit_bitor(Node *node) {
+    SAVE;
+    emit_expr(node->left);
+    push(rax);
+    emit_expr(node->right);
+    pop(rcx);
+    emit("or %d, %d, %d", rax, rcx, rax);
+}
+
+/// @brief potato | emit: bitwise NOT operation
+/// @param node 
+static void emit_bitnot(Node *node) {
+    SAVE;
+    emit_expr(node->left);
+    //we XOR rax with 0xFFFF to compute a bitwise NOT
+    emit("movi %d, %d", tmp, 0xFFFF);
+    emit("xor %d, %d, %d", rax, tmp, rax);
+}
+
+/// @brief potato | emit: castvariable type operation
+/// @param node 
+static void emit_cast(Node *node) {
+    SAVE;
+    emit_expr(node->operand);
+    emit_load_convert(node->ty, node->operand->ty);
+    return;
+}
+
+/// @brief potato | emit: comma operator 
+/// @param node 
+static void emit_comma(Node *node) {
+    SAVE;
+    emit_expr(node->left);
+    emit_expr(node->right);
+}
+
+/// @brief potato | emit: assign variable value. this may have some problems later.
+/// @param node 
+static void emit_assign(Node *node) {
+    SAVE;
+
+    if (node->left->ty->kind == KIND_STRUCT &&
+        node->left->ty->size > 1) {
+        emit_copy_struct(node->left, node->right);
+    } else {
+        emit_expr(node->right);
+        emit_load_convert(node->ty, node->right->ty);
+        emit_store(node->left);
+    }
+}
+
+/// @brief potato | emit: label address
+/// @param node 
+static void emit_label_addr(Node *node) {
+    SAVE;
+    emit("movi %d, %s ", rax, node->newlabel);
+}
+
+/// @brief potato | emit: goto statement dependent on computation
+/// @param node 
+static void emit_computed_goto(Node *node) {
+    SAVE;
+    emit_expr(node->operand);
+    emit("jmp %d", rax);
+}
+
+/// @brief potato | emit: all expression types converted to assembly
+/// @param node 
+static void emit_expr(Node *node) {
+    SAVE;
+    maybe_print_source_loc(node);
+    switch (node->kind) {
+    case AST_LITERAL: emit_literal(node); return;
+    case AST_LVAR:    emit_lvar(node); return;
+    case AST_GVAR:    emit_gvar(node); return;
+    case AST_FUNCDESG: emit_addr(node); return;
+    case AST_FUNCALL:
+        if (maybe_emit_builtin(node))
+            return;
+        // fall through
+    case AST_FUNCPTR_CALL:
+        emit_func_call(node);
+        return;
+    case AST_DECL:    emit_decl(node); return;
+    case AST_CONV:    emit_conv(node); return;
+    case AST_ADDR:    emit_addr(node->operand); return;
+    case AST_DEREF:   emit_deref(node); return;
+    case AST_IF:
+    case AST_TERNARY:
+        emit_ternary(node);
+        return;
+    case AST_GOTO:    emit_goto(node); return;
+    case AST_LABEL:
+        if (node->newlabel)
+            emit_label(node->newlabel);
+        return;
+    case AST_RETURN:  emit_return(node); return;
+    case AST_COMPOUND_STMT: emit_compound_stmt(node); return;
+    case AST_STRUCT_REF:
+        emit_load_struct_ref(node->struc, node->ty, 0);
+        return;
+    case OP_PRE_INC:   emit_pre_inc_dec(node, "add"); return;
+    case OP_PRE_DEC:   emit_pre_inc_dec(node, "sub"); return;
+    case OP_POST_INC:  emit_post_inc_dec(node, "add"); return;
+    case OP_POST_DEC:  emit_post_inc_dec(node, "sub"); return;
+    case '!': emit_lognot(node); return;
+    case '&': emit_bitand(node); return;
+    case '|': emit_bitor(node); return;
+    case '~': emit_bitnot(node); return;
+    case OP_LOGAND: emit_logand(node); return;
+    case OP_LOGOR:  emit_logor(node); return;
+    case OP_CAST:   emit_cast(node); return;
+    case ',': emit_comma(node); return;
+    case '=': emit_assign(node); return;
+    case OP_LABEL_ADDR: emit_label_addr(node); return;
+    case AST_COMPUTED_GOTO: emit_computed_goto(node); return;
+    default:
+        emit_binop(node);
+    }
+}
+
+/// @brief potato | emit: zero register
+/// @param size 
+static void emit_zero(int size) {
+    SAVE;
+    //emit blank words until we meet the requested size.
+    for(; size >= 1; size--) emit(".word 0");
+}
+
+/// @brief potato | emit: pad data variables
+/// @param node 
+/// @param off 
+static void emit_padding(Node *node, int off) {
+    SAVE;
+    int diff = node->initoff - off;
+    assert(diff >= 0);
+    emit_zero(diff);
 }
