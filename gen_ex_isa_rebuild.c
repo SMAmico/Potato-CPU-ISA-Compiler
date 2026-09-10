@@ -2217,3 +2217,38 @@ static void emit_padding(Node *node, int off) {
     assert(diff >= 0);
     emit_zero(diff);
 }
+
+/// @brief  potato | emit: address of data or variable
+/// @param operand 
+/// @param depth 
+static void emit_data_addr(Node *operand, int depth) {
+    switch (operand->kind) {
+    case AST_LVAR: {
+        char *label = make_label();
+        emit(".data %d", depth + 1);
+        emit_label(label);
+        do_emit_data(operand->lvarinit, operand->ty->size, 0, depth + 1);
+        emit(".data %d", depth);
+        emit(".word %s", label);
+        return;
+    }
+    case AST_GVAR:
+        emit(".word %s", operand->glabel);
+        return;
+    default:
+        error("internal error");
+    }
+}
+
+/// @brief potato | emit: character pointer
+/// @param s 
+/// @param depth 
+static void emit_data_charptr(char *s, int depth) {
+    char *label = make_label();
+    emit(".data %d", depth + 1);
+    emit_label(label);
+    emit(".string \"%s\"", quote_cstring(s));
+    emit(".data %d", depth);
+    emit(".word %s", label);
+}
+
