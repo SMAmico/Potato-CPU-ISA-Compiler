@@ -47,6 +47,16 @@ Run make to build:
 
     make
 
+The default build uses the x86-64 backend. To build the EX_ISA backend,
+select it explicitly:
+
+    make clean
+    make TARGET=ex-isa
+
+The compiler target option must match the backend selected at build time.
+Use `-m64` for the default build or `-mex-isa` for the EX_ISA build.
+EX_ISA builds emit EX_ISA assembly and do not invoke the GNU assembler.
+
 8cc comes with unit tests. To run the tests, give "test" as an argument:
 
     make test

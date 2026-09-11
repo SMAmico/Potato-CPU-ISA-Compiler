@@ -29,3 +29,8 @@ Backend is being rewritten. Once it's done, the current backend
 code will be discarded. The new backend models after the LLVM IR
 because the IR looks to be designed well. That's not going to be
 the same, though.
+
+The backend is selected at build time. Plain `make` builds the x86-64
+backend; `make TARGET=ex-isa` builds `gen_ex_isa_rebuild.c`. Only one
+backend is linked because both implementations provide the same target
+interface symbols.

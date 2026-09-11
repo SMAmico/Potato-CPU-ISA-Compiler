@@ -29,7 +29,25 @@ static bool dumpasm;
 static bool dontlink;
 static Buffer *cppdefs;
 static Vector *tmpfiles = &EMPTY_VECTOR;
-char *target_arch = "x86-64";  // Default target: x86-64 or "ex-isa"
+#if defined(DEFAULT_TARGET_EX_ISA)
+char *target_arch = "ex-isa";
+#else
+char *target_arch = "x86-64";
+#endif
+
+static bool target_is_ex_isa(void) {
+    return !strcmp(target_arch, "ex-isa");
+}
+
+static void check_target_option(const char *requested) {
+#if defined(DEFAULT_TARGET_EX_ISA)
+    if (strcmp(requested, "ex-isa"))
+        error("This compiler was built for EX_ISA; rebuild with TARGET=x86-64 for x86-64 output");
+#else
+    if (strcmp(requested, "x86-64"))
+        error("This compiler was built for x86-64; rebuild with TARGET=ex-isa for EX_ISA output");
+#endif
+}
 
 static void usage(int exitcode) {
     fprintf(exitcode ? stderr : stdout,
@@ -50,7 +68,8 @@ static void usage(int exitcode) {
             "  -Wall             Enable all warnings\n"
             "  -Werror           Make all warnings into errors\n"
             "  -O<number>        Does nothing at this moment\n"
-            "  -m64              Output 64-bit code (default)\n"
+            "  -m64              Output x86-64 code (default for x86-64 builds)\n"
+            "  -mex-isa          Output EX_ISA code (default for EX_ISA builds)\n"
             "  -w                Disable all warnings\n"
             "  -h                print this help\n"
             "\n"
@@ -117,9 +136,13 @@ static void parse_f_arg(char *s) {
 
 static void parse_m_arg(char *s) {
     if (!strcmp(s, "64")) {
+        check_target_option("x86-64");
         target_arch = "x86-64";
+    } else if (!strcmp(s, "ex-isa")) {
+        check_target_option("ex-isa");
+        target_arch = "ex-isa";
     } else {
-        error("Unknown -m target: %s (supported: 64)", s);
+        error("Unknown -m target: %s (supported: 64, ex-isa)", s);
     }
 }
 
@@ -197,7 +220,7 @@ int main(int argc, char **argv) {
     set_output_file(asmfp);
     
     // Add target-specific preprocessor defines
-    if (!strcmp(target_arch, "ex-isa")) {
+    if (target_is_ex_isa()) {
         buf_printf(cppdefs, "#define __EX_ISA__ 1\n");
     }
     
@@ -229,7 +252,7 @@ int main(int argc, char **argv) {
             outfile = replace_suffix(base(infile), 'o');
         
         // Skip GNU assembler for EX_ISA target
-        if (!strcmp(target_arch, "ex-isa")) {
+        if (target_is_ex_isa()) {
             // For EX_ISA, we already emitted EX_ISA assembly
             // In a full implementation, we'd call a separate EX_ISA assembler
             // For now, just skip the GNU as step
