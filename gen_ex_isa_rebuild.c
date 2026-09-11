@@ -186,8 +186,9 @@ bool dumpstack = false;
 bool dumpsource = true;
 
 //x86 register names: do we need them?
-static char *REGS[] = {rax, rbx, rcx, rdx, rdi, rsi};
-static char *FREGS[] = {xmm0, xmm1};
+//REGS[] holds the list of context-dependent registers.
+static int REGS[] = {rax, rbx, rcx, rdx, rdi, rsi};
+static int FREGS[] = {xmm0, xmm1};
 static char *SREGS[] = {"dil", "sil", "dl", "cl", "r8b", "r9b"};
 static char *MREGS[] = {"edi", "esi", "edx", "ecx", "r8d", "r9d"};
 //tab length
@@ -219,8 +220,8 @@ static void do_emit_data(Vector *inits, int size, int off, int depth);
 static void emit_data(Node *v, int off, int depth);
 
 /// @brief general-purpose and floating-point register lengths
-#define GPREG_LENGTH 2
-#define FPREG_LENGTH 4
+#define GPREG_LENGTH 1 //registers are one word
+#define FPREG_LENGTH 1 //fp registers are 2 words ideally, but constrained to one word for now.
 //6 GP registers (16 bits : rax, rbx, rcx, rdx, rsi, rdi), with xmm0 and xmm1 (32 bits each) as FP registers
 #define REGAREA_SIZE (6 * GPREG_LENGTH + 2 * FPREG_LENGTH)
 
@@ -1695,7 +1696,6 @@ The ISA does not have as many usable registers as x86 does, so
 function arguments will have to change. there are 6 registers that can be
 used for GP-length arguments, combined with 2 registers for FP-length arguments.
 the caller will save rax, rcx, rdx, xmm0, xmm1, and tmp before jumping.
-the callee will save rbx, rsi, rdi, fp and gb as is typical.
 */
 
 /// @brief potato | emit the builtin parameters 
@@ -2252,3 +2252,314 @@ static void emit_data_charptr(char *s, int depth) {
     emit(".word %s", label);
 }
 
+/*
+the actual emission of variables happens here.
+since the current architecture does not consider floats, 
+we simply use words for all data storage. booleans and chars
+are extended to use words as well.
+future changes can extend floats to use .long or .quad if the registers
+are added.
+*/
+
+/// @brief potato | emit: declare primitive type in x86 assembly
+/// @param ty 
+/// @param val 
+/// @param depth 
+static void emit_data_primtype(Type *ty, Node *val, int depth) {
+    switch (ty->kind) {
+    case KIND_FLOAT: {
+        float f = val->fval;
+        emit(".word %d", *(uint32_t *)&f);
+        break;
+    }
+    case KIND_DOUBLE:
+        emit(".word %ld", *(uint64_t *)&val->fval);
+        break;
+    case KIND_BOOL:
+        emit(".word %d", !!eval_intexpr(val, NULL));
+        break;
+    case KIND_CHAR:
+        emit(".word %d", eval_intexpr(val, NULL));
+        break;
+    case KIND_SHORT:
+        emit(".word %d", eval_intexpr(val, NULL));
+        break;
+    case KIND_INT:
+        emit(".word %d", eval_intexpr(val, NULL));
+        break;
+    case KIND_LONG:
+    case KIND_LLONG:
+    case KIND_PTR:
+        if (val->kind == OP_LABEL_ADDR) {
+            emit(".word %s", val->newlabel);
+            break;
+        }
+        bool is_char_ptr = (val->operand->ty->kind == KIND_ARRAY && val->operand->ty->ptr->kind == KIND_CHAR);
+        if (is_char_ptr) {
+            emit_data_charptr(val->operand->sval, depth);
+        } else if (val->kind == AST_GVAR) {
+            emit(".word %s", val->glabel);
+        } else {
+            Node *base = NULL;
+            int v = eval_intexpr(val, &base);
+            if (base == NULL) {
+                emit(".word %u", v);
+                break;
+            }
+            Type *ty = base->ty;
+            if (base->kind == AST_CONV || base->kind == AST_ADDR)
+                base = base->operand;
+            if (base->kind != AST_GVAR)
+                error("global variable expected, but got %s", node2s(base));
+            assert(ty->ptr);
+            emit(".word %s+%u", base->glabel, v * ty->ptr->size);
+        }
+        break;
+    default:
+        error("don't know how to handle\n  <%s>\n  <%s>", ty2s(ty), node2s(val));
+    }
+}
+
+/// @brief potato | emit: directly emit data into memory
+/// @param inits 
+/// @param size 
+/// @param off 
+/// @param depth 
+static void do_emit_data(Vector *inits, int size, int off, int depth) {
+    SAVE;
+    for (int i = 0; i < vec_len(inits) && 0 < size; i++) {
+        Node *node = vec_get(inits, i);
+        Node *v = node->initval;
+        emit_padding(node, off);
+        if (node->totype->bitsize > 0) {
+            assert(node->totype->bitoff == 0);
+            long data = eval_intexpr(v, NULL);
+            Type *totype = node->totype;
+            for (i++ ; i < vec_len(inits); i++) {
+                node = vec_get(inits, i);
+                if (node->totype->bitsize <= 0) {
+                    break;
+                }
+                v = node->initval;
+                totype = node->totype;
+                data |= ((((long)1 << totype->bitsize) - 1) & eval_intexpr(v, NULL)) << totype->bitoff;
+            }
+            emit_data_primtype(totype, &(Node){ AST_LITERAL, totype, .ival = data }, depth);
+            off += totype->size;
+            size -= totype->size;
+            if (i == vec_len(inits))
+                break;
+        } else {
+            off += node->totype->size;
+            size -= node->totype->size;
+        }
+        if (v->kind == AST_ADDR) {
+            emit_data_addr(v->operand, depth);
+            continue;
+        }
+        if (v->kind == AST_LVAR && v->lvarinit) {
+            do_emit_data(v->lvarinit, v->ty->size, 0, depth);
+            continue;
+        }
+        emit_data_primtype(node->totype, node->initval, depth);
+    }
+    emit_zero(size);
+}
+
+/// @brief potato | emit: emit initialized data into memory
+/// @param v 
+/// @param off 
+/// @param depth 
+static void emit_data(Node *v, int off, int depth) {
+    SAVE;
+    emit(".data %d", depth);
+    if (!v->declvar->ty->isstatic)
+        emit_noindent(".global %s", v->declvar->glabel);
+    emit_noindent("%s:", v->declvar->glabel);
+    do_emit_data(v->declinit, v->declvar->ty->size, off, depth);
+}
+
+
+//in progress
+//lcomm is complete. it will now allocate n words at m name in data
+
+/// @brief potato | emit: emit uninitialized data space into memory
+/// @param v 
+static void emit_bss(Node *v) {
+    SAVE;
+    emit(".data");
+    if (!v->declvar->ty->isstatic)
+        emit(".global %s", v->declvar->glabel);
+    emit(".lcomm %s, %d", v->declvar->glabel, v->declvar->ty->size);
+}
+
+/// @brief potato | emit: emit global variable
+/// @param v 
+static void emit_global_var(Node *v) {
+    SAVE;
+    if (v->declinit)
+        emit_data(v, 0, 0);
+    else
+        emit_bss(v);
+}
+
+/// @brief potato | push register context to stack including vector registers
+/// @return 
+static int emit_regsave_area() {
+    //set back the stack pointer by the size of the context window
+    emit("sub $%d, #rsp", REGAREA_SIZE);
+    //push GP registers
+    emit("str %d, %d", rax, rsp, 0);
+    emit("str %d, %d", rbx, rsp, 1);
+    emit("str %d, %d", rcx, rsp, 2);
+    emit("str %d, %d", rdx, rsp, 3);
+    emit("str %d, %d", rsi, rsp, 4);
+    emit("str %d, %d", rdi, rsp, 5);
+    /*
+    emit("mov #rdi, (#rsp)");
+    emit("mov #rsi, 8(#rsp)");
+    emit("mov #rdx, 16(#rsp)");
+    emit("mov #rcx, 24(#rsp)");
+    emit("mov #r8, 32(#rsp)");
+    emit("mov #r9, 40(#rsp)");
+    emit("movaps #xmm0, 48(#rsp)");
+    emit("movaps #xmm1, 64(#rsp)");
+    emit("movaps #xmm2, 80(#rsp)");
+    emit("movaps #xmm3, 96(#rsp)");
+    emit("movaps #xmm4, 112(#rsp)");
+    emit("movaps #xmm5, 128(#rsp)");
+    emit("movaps #xmm6, 144(#rsp)");
+    emit("movaps #xmm7, 160(#rsp)");
+    */
+    //push FP registers
+    emit("str %d, %d", xmm0, rsp, 6);
+    emit("str %d, %d", xmm1, rsp, 7);
+    return REGAREA_SIZE;
+}
+
+/// @brief potato | emit: push all function parameters to stack
+/// @param params 
+/// @param off 
+static void push_func_params(Vector *params, int off) {
+    int ireg = 0;
+    int xreg = 0;
+    int arg = 2;
+    for (int i = 0; i < vec_len(params); i++) {
+        Node *v = vec_get(params, i);
+        if (v->ty->kind == KIND_STRUCT) {
+            //emit("lea %d(#rbp), #rax", arg * 8);
+            emit("addi %d, %d, %d", rax, rbp, arg);
+            int size = push_struct(v->ty->size);
+            off -= size;
+            //we're word addressed, so we increment everything by words.
+            arg += size;
+        } else if (is_flotype(v->ty)) {
+            if (xreg >= 2) {
+                //for local variables beyond our register count,
+                //we store the floating point argument
+                //to the base pointer plus argument offset
+                //emit("mov %d(#rbp), #rax", arg++ * 8);
+                emit("str %d, %d, %d", rax, rbp, arg++);
+                push(rax);
+            } else {
+                //otherwise we just push the xmm registers
+                push_xmm(xreg++);
+            }
+            off -= 1;
+        } else {
+            if (ireg >= 6) {
+                //if we need to store a boolean in overflow,
+                if (v->ty->kind == KIND_BOOL) {
+                    //we just store it lol because we have no byteregs
+                    //emit("mov %d(#rbp), #al", arg++ * 8);
+                    //emit("movzb #al, #eax");
+                    emit("str %d, %d, %d", rax, rbp, arg++);
+                } else {
+                    //emit("mov %d(#rbp), #rax", arg++ * 8);
+                    //normal stuff works the same.
+                    emit("str %d, %d, %d", rax, rbp, arg++);
+                }
+                push(rax);
+            } else {
+                //for things we have registers for, just move to
+                //the proper register (unneeded)
+                //if (v->ty->kind == KIND_BOOL)
+                    //emit("movzb #%s, #%s", SREGS[ireg], MREGS[ireg]);
+                push(REGS[ireg++]);
+            }
+            off -= 1;
+        }
+        v->loff = off;
+    }
+}
+
+/// @brief  potato | emit: push context to stack and prepare registers for new function
+/// @param func 
+static void emit_func_prologue(Node *func) {
+    SAVE;
+    emit(".text");
+    if (!func->ty->isstatic)
+        emit_noindent(".global %s", func->fname);
+    emit_noindent("%s:", func->fname);
+    emit("nop");
+    push(rbp);
+    //emit("mov #rsp, #rbp");
+    emit("str %d, %d, %d", rsp, rbp, 0);
+    int off = 0;
+    if (func->ty->hasva) {
+        set_reg_nums(func->params);
+        off -= emit_regsave_area();
+    }
+    push_func_params(func->params, off);
+    off -= vec_len(func->params);
+
+    int localarea = 0;
+    for (int i = 0; i < vec_len(func->localvars); i++) {
+        Node *v = vec_get(func->localvars, i);
+        int size = align(v->ty->size, 1);
+        assert(size % 1 == 0);
+        off -= size;
+        v->loff = off;
+        localarea += size;
+    }
+    if (localarea) {
+        //emit("sub $%d, #rsp", localarea);
+        emit("subi %d, %d, %d", rsp, rbp, localarea);
+        stackpos += localarea;
+    }
+}
+
+/// @brief potato | emit: emit function toplevel into memory
+/// @param v 
+void emit_toplevel(Node *v) {
+    stackpos = 1;
+    if (v->kind == AST_FUNC) {
+        emit_func_prologue(v);
+        emit_expr(v->body);
+        emit_ret();
+    } else if (v->kind == AST_DECL) {
+        emit_global_var(v);
+    } else {
+        error("internal error");
+    }
+}
+
+// ============================================================================
+// Target abstraction interface (x86-64 backend)
+// ============================================================================
+
+void gen_x86_64_init(FILE *fp) {
+    set_output_file(fp);
+}
+
+void gen_x86_64_finalize(void) {
+    close_output_file();
+}
+
+void gen_x86_64_emit_toplevel(Node *v) {
+    emit_toplevel(v);
+}
+
+void gen_x86_64_set_output_file(FILE *fp) {
+    set_output_file(fp);
+}
