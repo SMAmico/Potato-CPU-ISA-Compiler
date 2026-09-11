@@ -1,5 +1,7 @@
 // EX_ISA backend for 8cc compiler
 // Target: 4-bit opcodes, 16 registers, 16-bit words, 256-byte address space
+// Build compiler: make TARGET=ex-isa
+// Compile test: ./8cc -mex-isa -S -o test_ex_isa_codegen.s test_ex_isa_codegen.c
 //this project uses the assembler below. all assembly instructions 
 //should be converted into this format.
 
@@ -2545,21 +2547,21 @@ void emit_toplevel(Node *v) {
 }
 
 // ============================================================================
-// Target abstraction interface (x86-64 backend)
+// Target abstraction interface (EX_ISA backend)
 // ============================================================================
 
-void gen_x86_64_init(FILE *fp) {
+void gen_ex_isa_init(FILE *fp) {
     set_output_file(fp);
 }
 
-void gen_x86_64_finalize(void) {
+void gen_ex_isa_finalize(void) {
     close_output_file();
 }
 
-void gen_x86_64_emit_toplevel(Node *v) {
+void gen_ex_isa_emit_toplevel(Node *v) {
     emit_toplevel(v);
 }
 
-void gen_x86_64_set_output_file(FILE *fp) {
+void gen_ex_isa_set_output_file(FILE *fp) {
     set_output_file(fp);
 }
