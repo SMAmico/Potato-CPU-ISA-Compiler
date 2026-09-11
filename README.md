@@ -1,7 +1,7 @@
 Potato-16 C Compiler
 =============
 
-This is a ported compiler of 8cc (shown below) to target my processor project's ISA. minimal features are in, don't expect a lot. I used a fair amount of AI slop for this! so be warned when seeing bad coding ideas! this is more just to see how far I can get with my understanding. the real stuff starts below.
+This is a ported compiler of 8cc (shown below) to target my processor project's ISA. It features a 16-bit, single cycle system with MMIO support. The new target is still a WIP, but can compile basic functions to assembly (.s) files. FP and L/D support is eventually planned in the ISA.
 
 -----
 
