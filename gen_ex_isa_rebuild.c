@@ -2,6 +2,7 @@
 // Target: 4-bit opcodes, 16 registers, 16-bit words, 256-byte address space
 // Build compiler: make TARGET=ex-isa
 // Compile test: ./8cc -mex-isa -S -o test_ex_isa_codegen.s test_ex_isa_codegen.c
+// Width test: ./8cc -mex-isa -S -o test_ex_isa_widths.s test_ex_isa_widths.c
 //this project uses the assembler below. all assembly instructions 
 //should be converted into this format.
 
@@ -173,6 +174,8 @@
 
 #define xmm0 8  //x86 floating point register equivalent (TEMP)
 #define xmm1 9  //x86 floating point register equivalent (TEMP)
+
+#define EX_ISA_REG_BYTES 2
 
 // Copyright 2012 Rui Ueyama. Released under the MIT license.
 
@@ -439,24 +442,45 @@ static void emit_asm(int op, int a, ...) {
 /// @param r 
 /// @return 
 static int get_int_reg(Type *ty, char r) {
-    //these registers aren't that important since there's only one length
+    // The EX_ISA register file has one 16-bit word per integer register.
     assert(r == 'a' || r == 'c');
-    switch (ty->size) {
-        //16 bits is all we have!
-    case 16: return (r == 'a') ? rax : rcx;
-    default:
+    if (is_inttype(ty))
+        return (r == 'a') ? rax : rcx;
+    else
         error("Unknown data size: %s: %d", ty2s(ty), ty->size);
-    }
 }
 
 /// @brief select the appropriate mov command by bit length (just mov)
 /// @param ty 
 /// @return 
 static int get_load_inst(Type *ty) {
-    switch (ty->size) {
-    case 16: return ins_movi;
-    default:
+    if (is_inttype(ty))
+        return ins_movi;
+    else
         error("Unknown data size: %s: %d", ty2s(ty), ty->size);
+}
+
+/// @brief normalize an integer value to the EX_ISA register width
+/// @param ty source type represented in rax
+static void emit_normalize_int(Type *ty) {
+    if (!is_inttype(ty))
+        return;
+
+    if (ty->size > EX_ISA_REG_BYTES) {
+        emit("andi %d, %d, %d", rax, rax, 0xFFFF);
+        return;
+    }
+
+    if (ty->size < EX_ISA_REG_BYTES) {
+        int mask = (ty->kind == KIND_BOOL) ? 1 : 0xFF;
+        emit("andi %d, %d, %d", rax, rax, mask);
+        if (!ty->usig && ty->kind != KIND_BOOL) {
+            char *done = make_label();
+            emit("andi %d, %d, %d", tmp, rax, 0x80);
+            emit("jz %d, %s", tmp, done);
+            emit("subi %d, %d, %d", rax, rax, 0x100);
+            emit("%s:", done);
+        }
     }
 }
 
@@ -475,7 +499,7 @@ static void push_xmm(int reg) {
     SAVE;
     //FPs will use DWORDS, or 2 words
     //subtract 2 from stack pointer (word address in direct memory mapping)
-    emit("subi %d, %d, %d", sp, sp, 2); //PROBLEM: sp only contains a register value, isa can only write direct values
+    emit("subi %d, %d, %d", sp, sp, 1); //PROBLEM: sp only contains a register value, isa can only write direct values
                                          //SOLUTION: make str and ldr pull addresses from registers instead of
                                          // direct memory mapping, expanding address space to 16 bit 
                                          //FIXED: this is now fixed in the arch
@@ -493,7 +517,7 @@ static void pop_xmm(int reg) {
     emit_asm(ins_ldr, FREGS[reg], sp, 0);
     //add 1 to stack pointer
     //emit("movsd (#rsp), #xmm%d", reg);
-    emit("addi %d, %d, %d", sp, sp, 2);
+    emit("addi %d, %d, %d", sp, sp, 1);
     stackpos -= 2;
     assert(stackpos >= 0);
 }
@@ -637,6 +661,7 @@ static void emit_gload(Type *ty, char *label, int off) {
     emit("ldr %d, %s, %d", rax, label, off);
     // Extract the requested bit-field after its containing word is loaded.
     maybe_emit_bitshift_load(ty);
+    emit_normalize_int(ty);
 
 }
 
@@ -654,22 +679,7 @@ handling can be observed if we want to increase/variate register sizes.
 /// @brief potato | emit: converts data in e/rax to int based on type
 /// @param ty 
 static void emit_intcast(Type *ty) {
-    switch(ty->kind) {
-    case KIND_BOOL:
-    case KIND_CHAR:
-        ty->usig ? emit_asm(ins_mov, rax, rax) : emit_asm(ins_mov, rax, rax);
-        return;
-    case KIND_SHORT:
-        ty->usig ? emit_asm(ins_mov, rax, rax) : emit_asm(ins_mov, rax, rax);
-        return;
-    case KIND_INT:
-        ty->usig ? emit_asm(ins_mov, rax, rax) : emit_asm(ins_mov, rax, rax);
-        return;
-    //no support in isa
-    case KIND_LONG:
-    case KIND_LLONG:
-        return;
-    }
+    emit_normalize_int(ty);
 }
 
 /*
@@ -720,6 +730,7 @@ static void emit_lload(Type *ty, int base, int off) {
 
     // Extract the requested bit-field after loading its containing word.
     maybe_emit_bitshift_load(ty);
+    emit_normalize_int(ty);
 
 }
 
@@ -759,6 +770,7 @@ static void emit_gsave(char *varname, Type *ty, int off) {
     assert(ty->kind != KIND_ARRAY);
     //convert any booleans into usable variables
     maybe_convert_bool(ty);
+    emit_normalize_int(ty);
     //get the appropriate register for the type
     int reg = get_int_reg(ty, 'a');
     if (ty->bitsize > 0) {
@@ -786,6 +798,7 @@ static void emit_lsave(Type *ty, int off) {
     } else {
         //otherwise, convert booleans to usable state
         maybe_convert_bool(ty);
+        emit_normalize_int(ty);
         //get appropriate register type,
         int reg = get_int_reg(ty, 'a');
         if (ty->bitsize > 0) {
@@ -811,6 +824,7 @@ static void do_emit_assign_deref(Type *ty, int off) {
     // The address was pushed before the value expression was evaluated.
     emit_asm(ins_ldr, rcx, sp, 0);
 
+    emit_normalize_int(ty);
     int reg = get_int_reg(ty, 'a');
     if (off)
         emit_asm(ins_str, reg, rcx, off);
@@ -1115,7 +1129,7 @@ static void emit_load_convert(Type *to, Type *from) {
         //now, booleans we have handled already.
         emit_to_bool(from);
     else if (is_inttype(from) && is_inttype(to))
-        emit_intcast(from);
+        emit_intcast(to);
     else if (is_inttype(to))
         emit_toint(from);
 }
@@ -1175,6 +1189,7 @@ static void emit_save_literal(Node *node, Type *totype, int off) {
     case KIND_BOOL:{
         //emit("movb $%d, %d(#rbp)", !!node->ival, off);
         emit_asm(ins_movi, rax, !!node->ival);
+        emit_normalize_int(totype);
         emit_asm(ins_str, rax, rbp, off);
         break;
     }  
@@ -1182,6 +1197,7 @@ static void emit_save_literal(Node *node, Type *totype, int off) {
     case KIND_CHAR:{
         //emit("movb $%d, %d(#rbp)", node->ival, off);
         emit_asm(ins_movi, rax, node->ival);
+        emit_normalize_int(totype);
         emit_asm(ins_str, rax, rbp, off);
         
         break;
@@ -1190,6 +1206,7 @@ static void emit_save_literal(Node *node, Type *totype, int off) {
     case KIND_SHORT: {
         //emit("movw $%d, %d(#rbp)", node->ival, off);
         emit_asm(ins_movi, rax, node->ival);
+        emit_normalize_int(totype);
         emit_asm(ins_str, rax, rbp, off);
         break;
     }
@@ -1197,6 +1214,7 @@ static void emit_save_literal(Node *node, Type *totype, int off) {
     case KIND_INT: {
         //emit("movl $%d, %d(#rbp)", node->ival, off);
         emit_asm(ins_movi, rax, node->ival);
+        emit_normalize_int(totype);
         emit_asm(ins_str, rax, rbp, off);
         break;
     }
@@ -1508,6 +1526,7 @@ static void emit_literal(Node *node) {
     default:
         error("internal error");
     }
+    emit_normalize_int(node->ty);
 }
 
 /// @brief potato | count the number of lines in a buffer, then split the buffer into a set of null-terminated lines
@@ -1809,6 +1828,7 @@ static int emit_args(Vector *vals) {
         } else {
             //fetch into register
             emit_expr(v);
+            emit_normalize_int(v->ty);
             //then push to stack
             push(rax);
             r += 1;
@@ -1928,6 +1948,7 @@ static void emit_func_call(Node *node) {
 
     //then we restore the argument registers.
     restore_arg_regs(vec_len(ints), vec_len(floats));
+    emit_normalize_int(node->ty);
     //and ensure the stack has returned to its original position.
     assert(opos == stackpos);
 }
@@ -1993,6 +2014,7 @@ static void emit_return(Node *node) {
     if (node->retval) {
         emit_expr(node->retval);
         maybe_booleanize_retval(node->retval->ty);
+        emit_normalize_int(node->retval->ty);
     }
     emit_ret();
 }
@@ -2544,6 +2566,7 @@ void emit_toplevel(Node *v) {
     } else {
         error("internal error");
     }
+    emit("halt");
 }
 
 // ============================================================================
