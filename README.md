@@ -74,6 +74,12 @@ Author
 Rui Ueyama <rui314@gmail.com>
 
 
+Retargeting
+------
+
+Seth Amico
+
+
 Links for C compiler development
 --------------------------------
 
