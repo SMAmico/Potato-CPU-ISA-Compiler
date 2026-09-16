@@ -194,8 +194,6 @@ bool dumpsource = true;
 //REGS[] holds the list of context-dependent registers.
 static int REGS[] = {rax, rbx, rcx, rdx, rdi, rsi};
 static int FREGS[] = {xmm0, xmm1};
-static char *SREGS[] = {"dil", "sil", "dl", "cl", "r8b", "r9b"};
-static char *MREGS[] = {"edi", "esi", "edx", "ecx", "r8d", "r9d"};
 //tab length
 static int TAB = 8;
 static Vector functions_storage;
@@ -444,7 +442,7 @@ static void emit_asm(int op, int a, ...) {
 static int get_int_reg(Type *ty, char r) {
     // The EX_ISA register file has one 16-bit word per integer register.
     assert(r == 'a' || r == 'c');
-    if (is_inttype(ty))
+    if (is_inttype(ty) || ty->kind == KIND_PTR)
         return (r == 'a') ? rax : rcx;
     else
         error("Unknown data size: %s: %d", ty2s(ty), ty->size);
@@ -454,7 +452,7 @@ static int get_int_reg(Type *ty, char r) {
 /// @param ty 
 /// @return 
 static int get_load_inst(Type *ty) {
-    if (is_inttype(ty))
+    if (is_inttype(ty) || ty->kind == KIND_PTR)
         return ins_movi;
     else
         error("Unknown data size: %s: %d", ty2s(ty), ty->size);
@@ -1056,20 +1054,20 @@ static void emit_binop_int_arith(Node *node) {
         if (node->ty->usig) {
           //emit("xor #edx, #edx");
           //emit("div #rcx");
-          error("unsupported operation '%d'", node->kind);
+          error("unsupported operation '%c'", node->kind);
         } else {
           //emit("cqto");
           //emit("idiv #rcx");
-          error("unsupported operation '%d'", node->kind);
+          error("unsupported operation '%c'", node->kind);
         }
         if (node->kind == '%')
-            error("unsupported operation '%d'", node->kind);
+            error("unsupported operation '%c'", node->kind);
             //emit("mov #edx, #eax");
     } else if (node->kind == OP_SAL || node->kind == OP_SAR || node->kind == OP_SHR) {
         //emit("%s #cl, #%s", op, get_int_reg(node->left->ty, 'a'));
-        emit("%s %d, %d", op, get_int_reg(node->left->ty, 'a'), rcx);
+        emit("%s %d, %d, %d", op, rax, rax, rcx);
     } else {
-        emit("%s %d, %d", op, rax, rcx);
+        emit("%s %d, %d, %d", op, rax, rax, rcx);
     }
 }
 
@@ -1084,7 +1082,7 @@ static void emit_binop_float_arith(Node *node) {
     SAVE;
     char *op;
     bool isdouble = (node->ty->kind == KIND_DOUBLE);
-    error("floating point arithmetic is not supported in this ISA");
+    fprintf(stderr, "floating point arithmetic is not supported in this ISA\n");
     /*
     switch (node->kind) {
     case '+': op = (isdouble ? "addsd" : "addss"); break;
@@ -1101,6 +1099,28 @@ static void emit_binop_float_arith(Node *node) {
     pop_xmm(0);
     emit("%s #xmm1, #xmm0", op);
     */
+
+    //stand-in operation redirect for FP arithmetic
+    //
+    switch (node->kind) {
+    case '+': op = "add"; 
+        break;
+    case '-': op = "sub";
+        break;
+    case '*': op = "mult";
+        break;
+    case '/': op = "div";
+        break;
+    default: 
+        error("invalid operator '%d'", node->kind);
+    }
+
+    emit_expr(node->left);
+    push_xmm(0);
+    emit_expr(node->right);
+    emit("mov %d, %d", xmm1, xmm0);
+    pop_xmm(0);
+    emit("%s %d, %d", op, xmm0, xmm1);
 }
 
 /// @brief potato | emit: load and convert data between types
@@ -1783,7 +1803,7 @@ static void save_arg_regs(int nints, int nfloats) {
     for (int i = 0; i < nints; i++)
         //push the input argument regs we have filled, ascending
         push(REGS[i]);
-    for (int i = 0; i < nfloats; i++)
+    for (int i = 1; i < nfloats; i++)
         //push whatever fp regs are filled, ascending
         push_xmm(i);
 }
@@ -1815,7 +1835,7 @@ static int emit_args(Vector *vals) {
             //get the address of the struct
             emit_addr(v);
             //then push the whole struct to the stack
-            r += push_struct(v->ty->size);
+            r += push_struct(v->ty->size) / EX_ISA_REG_BYTES + 1;
         //for floats, push the floating-point argument registers
         } else if (is_flotype(v->ty)) {
             //fetch the agrument and pull it to a register
@@ -1923,12 +1943,14 @@ static void emit_func_call(Node *node) {
     //if the function is a function pointer, jump to the function
     if (isptr) {
         push(pc);
+        stackpos -= 1;
         emit("jmp %d", tmp);
     }
     else {
         //if the function is not a pointer,
         //we jump to the function name instead.
         push(pc);
+        stackpos -= 1;
         emit("jmp %s", node->fname);
         maybe_booleanize_retval(node->ty);
     }
@@ -1950,6 +1972,7 @@ static void emit_func_call(Node *node) {
     restore_arg_regs(vec_len(ints), vec_len(floats));
     emit_normalize_int(node->ty);
     //and ensure the stack has returned to its original position.
+    fprintf(stderr, "stackpos: %d, opos: %d\n", stackpos, opos);
     assert(opos == stackpos);
 }
 
@@ -2249,10 +2272,8 @@ static void emit_data_addr(Node *operand, int depth) {
     switch (operand->kind) {
     case AST_LVAR: {
         char *label = make_label();
-        emit(".data %d", depth + 1);
         emit_label(label);
         do_emit_data(operand->lvarinit, operand->ty->size, 0, depth + 1);
-        emit(".data %d", depth);
         emit(".word %s", label);
         return;
     }
@@ -2269,10 +2290,8 @@ static void emit_data_addr(Node *operand, int depth) {
 /// @param depth 
 static void emit_data_charptr(char *s, int depth) {
     char *label = make_label();
-    emit(".data %d", depth + 1);
     emit_label(label);
     emit(".string \"%s\"", quote_cstring(s));
-    emit(".data %d", depth);
     emit(".word %s", label);
 }
 
@@ -2396,7 +2415,7 @@ static void do_emit_data(Vector *inits, int size, int off, int depth) {
 /// @param depth 
 static void emit_data(Node *v, int off, int depth) {
     SAVE;
-    emit(".data %d", depth);
+    emit(".data");
     if (!v->declvar->ty->isstatic)
         emit_noindent(".global %s", v->declvar->glabel);
     emit_noindent("%s:", v->declvar->glabel);
@@ -2561,12 +2580,12 @@ void emit_toplevel(Node *v) {
         emit_func_prologue(v);
         emit_expr(v->body);
         emit_ret();
+        emit("halt");
     } else if (v->kind == AST_DECL) {
         emit_global_var(v);
     } else {
         error("internal error");
     }
-    emit("halt");
 }
 
 // ============================================================================
