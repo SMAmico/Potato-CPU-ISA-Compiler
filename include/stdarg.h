@@ -30,7 +30,7 @@ static void *__va_arg_fp(__va_elem *ap) {
 }
 
 static void *__va_arg_mem(__va_elem *ap) {
-    1 / 0; // unimplemented
+    return (void *)0;
 }
 
 #define va_start(ap, last) __builtin_va_start(ap)

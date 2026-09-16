@@ -3,6 +3,14 @@
 #ifndef EIGHTCC_H
 #define EIGHTCC_H
 
+#ifdef DEFAULT_TARGET_EX_ISA
+#define TARGET_POINTER_SIZE 2
+#define TARGET_POINTER_ALIGN 2
+#else
+#define TARGET_POINTER_SIZE 8
+#define TARGET_POINTER_ALIGN 8
+#endif
+
 #include <assert.h>
 #include <inttypes.h>
 #include <stdarg.h>
