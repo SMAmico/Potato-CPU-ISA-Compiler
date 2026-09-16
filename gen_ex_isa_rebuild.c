@@ -2420,6 +2420,7 @@ static void emit_data(Node *v, int off, int depth) {
         emit_noindent(".global %s", v->declvar->glabel);
     emit_noindent("%s:", v->declvar->glabel);
     do_emit_data(v->declinit, v->declvar->ty->size, off, depth);
+    emit_noindent(".text");
 }
 
 
@@ -2434,6 +2435,7 @@ static void emit_bss(Node *v) {
     if (!v->declvar->ty->isstatic)
         emit(".global %s", v->declvar->glabel);
     emit(".lcomm %s, %d", v->declvar->glabel, v->declvar->ty->size);
+    emit_noindent(".text");
 }
 
 /// @brief potato | emit: emit global variable
