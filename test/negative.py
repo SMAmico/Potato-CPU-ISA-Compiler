@@ -395,7 +395,7 @@ int f() { x: x:; }
 
 def run(args):
     expect, code = args
-    p = Popen(["./8cc", "-c", "-o", "/dev/null", "-"], stdin=PIPE, stdout=PIPE, stderr=STDOUT)
+    p = Popen(["./build/8cc", "-c", "-o", "/dev/null", "-"], stdin=PIPE, stdout=PIPE, stderr=STDOUT)
     out, err = p.communicate(code)
     if out == None:
         return "expected error, but it didn't fail: %s" % expect
