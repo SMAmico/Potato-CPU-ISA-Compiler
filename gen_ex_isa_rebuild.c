@@ -1120,7 +1120,7 @@ static void emit_binop_float_arith(Node *node) {
     emit_expr(node->right);
     emit("mov %d, %d", xmm1, xmm0);
     pop_xmm(0);
-    emit("%s %d, %d", op, xmm0, xmm1);
+    emit("%s %d, %d, %d", op, xmm0, xmm0, xmm1);
 }
 
 /// @brief potato | emit: load and convert data between types
@@ -1131,11 +1131,11 @@ static void emit_load_convert(Type *to, Type *from) {
     if (is_inttype(from) && to->kind == KIND_FLOAT)
         //we convert and int to a float by moving it from a std reg to a float reg
         //emit("cvtsi2ss #eax, #xmm0");
-        emit("mov eax, xmm0");
+        emit("mov %d, %d", xmm0, rax);
     else if (is_inttype(from) && to->kind == KIND_DOUBLE)
         //same story for a double
         //emit("cvtsi2sd #eax, #xmm0");
-        emit("mov eax, xmm0");
+        emit("mov %d, %d", xmm0, rax);
     else if (from->kind == KIND_FLOAT && to->kind == KIND_DOUBLE)
         //really nothing happens in regards to the registers.
         //there's no double or float distinction in the ISA.
@@ -1322,7 +1322,7 @@ static void emit_addr(Node *node) {
         //emit("lea %s(#rip), #rax", node->fname);
 
         emit_asm(ins_mov, rax, zero);
-        emit("movi %d, %s", rax, node->fname);
+        emit("movi %d, %s", rax, node->target_label);
         break;
     default:
         error("internal error: %s", node2s(node));
@@ -1951,7 +1951,7 @@ static void emit_func_call(Node *node) {
         //we jump to the function name instead.
         push(pc);
         stackpos -= 1;
-        emit("jmp %s", node->fname);
+        emit("jmp %s", node->target_label);
         maybe_booleanize_retval(node->ty);
     }
     if (restsize > 0) {
@@ -2067,13 +2067,13 @@ static void emit_logand(Node *node) {
 
     emit("cmp %d, %d", rax, rax);
     emit("mov %d, %d", rax, zero);
-    emit("je %s", end);
+    emit("jz %d, %s", rax, end);
 
     emit_expr(node->right);
 
     emit("cmp %d, %d", rax, rax);
     emit("mov %d, %d", rax, zero);
-    emit("je %s", end);
+    emit("jz %d, %s", rax, end);
     emit("movi %d, %d", rax, 1);
 
     emit_label(end);
@@ -2083,19 +2083,18 @@ static void emit_logand(Node *node) {
 /// @param node 
 static void emit_logor(Node *node) {
     SAVE;
+    char *right = make_label();
     char *end = make_label();
     emit_expr(node->left);
 
-    emit("cmp %d, %d", rax, rax);
-    emit("movi, rax, 1");
-    emit("jne %s", end);
+    emit("jz %d, %s", rax, right);
+    emit("movi %d, %d", rax, 1);
+    emit("jmp %s", end);
 
+    emit_label(right);
     emit_expr(node->right);
-
-    emit("cmp %d, %d", rax, rax);
-    emit("movi, rax, 1");
-    emit("jne %s", end);
-    emit("mov %d, %d", rax, zero);
+    emit("jz %d, %s", rax, end);
+    emit("movi %d, %d", rax, 1);
 
     emit_label(end);
 }
@@ -2108,8 +2107,8 @@ static void emit_lognot(Node *node) {
     SAVE;
     emit_expr(node->operand);
     //copy the x86 assembly, but in EX_ISA
-    emit("ins_cmp %d %d", rax, zero);
-    emit("ins_seteq %d", rax);
+    emit("cmp %d, %d", rax, zero);
+    emit("seteq %d", rax);
 }
 
 /// @brief potato | emit: bitwise AND operation
@@ -2544,8 +2543,8 @@ static void emit_func_prologue(Node *func) {
     SAVE;
     emit(".text");
     if (!func->ty->isstatic)
-        emit_noindent(".global %s", func->fname);
-    emit_noindent("%s:", func->fname);
+        emit_noindent(".global %s", func->target_label);
+    emit_noindent("%s:", func->target_label);
     emit("nop");
     push(rbp);
     //emit("mov #rsp, #rbp");
