@@ -19,6 +19,8 @@
 #include <stdnoreturn.h>
 #include <time.h>
 
+extern char *module_id;
+
 enum {
     TIDENT,
     TKEYWORD,
@@ -241,6 +243,7 @@ typedef struct Node {
         // Function call or function declaration
         struct {
             char *fname;
+            char *target_label;
             // Function call
             Vector *args;
             struct Type *ftype;
