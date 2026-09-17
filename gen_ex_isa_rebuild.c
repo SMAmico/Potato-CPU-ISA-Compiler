@@ -1180,9 +1180,9 @@ static void emit_binop(Node *node) {
         return;
     }
     switch (node->kind) {
-    case '<': emit_comp("setlt", "setb", node); return;
-    case OP_EQ: emit_comp("seteq", "sete", node); return;
-    case OP_LE: emit_comp("setle", "setna", node); return;
+    case '<': emit_comp("setlt", "setlt", node); return;
+    case OP_EQ: emit_comp("seteq", "seteq", node); return;
+    case OP_LE: emit_comp("setle", "setle", node); return;
     case OP_NE: emit_comp("setne", "setne", node); return;
     }
     if (is_inttype(node->ty))
