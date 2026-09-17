@@ -132,11 +132,15 @@ char *make_tempname() {
 
 char *make_label() {
     static int c = 0;
+    if (module_id)
+        return format(".%s.L%d", module_id, c++);
     return format(".L%d", c++);
 }
 
 static char *make_static_label(char *name) {
     static int c = 0;
+    if (module_id)
+        return format(".%s.S%d.%s", module_id, c++, name);
     return format(".S%d.%s", c++, name);
 }
 
@@ -188,7 +192,9 @@ static Node *ast_lvar(Type *ty, char *name) {
 }
 
 static Node *ast_gvar(Type *ty, char *name) {
-    Node *r = make_ast(&(Node){ AST_GVAR, ty, .varname = name, .glabel = name });
+    Node *r = make_ast(&(Node){
+        AST_GVAR, ty, .varname = name,
+        .glabel = ty->isstatic ? make_static_label(name) : name });
     map_put(globalenv, name, r);
     return r;
 }
@@ -237,17 +243,22 @@ static Node *ast_string(int enc, char *str, int len) {
     return make_ast(&(Node){ AST_LITERAL, .ty = ty, .sval = body });
 }
 
-static Node *ast_funcall(Type *ftype, char *fname, Vector *args) {
+static Node *ast_funcall(Type *ftype, char *fname, char *target_label, Vector *args) {
     return make_ast(&(Node){
         .kind = AST_FUNCALL,
         .ty = ftype->rettype,
         .fname = fname,
+        .target_label = target_label,
         .args = args,
         .ftype = ftype });
 }
 
-static Node *ast_funcdesg(Type *ty, char *fname) {
-    return make_ast(&(Node){ AST_FUNCDESG, ty, .fname = fname });
+static Node *ast_funcdesg(Type *ty, char *fname, char *target_label) {
+    return make_ast(&(Node){
+        .kind = AST_FUNCDESG,
+        .ty = ty,
+        .fname = fname,
+        .target_label = target_label });
 }
 
 static Node *ast_funcptr_call(Node *fptr, Vector *args) {
@@ -260,11 +271,12 @@ static Node *ast_funcptr_call(Node *fptr, Vector *args) {
         .args = args });
 }
 
-static Node *ast_func(Type *ty, char *fname, Vector *params, Node *body, Vector *localvars) {
+static Node *ast_func(Type *ty, char *fname, char *target_label, Vector *params, Node *body, Vector *localvars) {
     return make_ast(&(Node){
         .kind = AST_FUNC,
         .ty = ty,
         .fname = fname,
+        .target_label = target_label,
         .params = params,
         .localvars = localvars,
         .body = body});
@@ -828,7 +840,7 @@ static Node *read_funcall(Node *fp) {
     if (fp->kind == AST_ADDR && fp->operand->kind == AST_FUNCDESG) {
         Node *desg = fp->operand;
         Vector *args = read_func_args(desg->ty->params);
-        return ast_funcall(desg->ty, desg->fname, args);
+        return ast_funcall(desg->ty, desg->fname, desg->target_label, args);
     }
     Vector *args = read_func_args(fp->ty->ptr->params);
     return ast_funcptr_call(fp, args);
@@ -919,10 +931,10 @@ static Node *read_var_or_func(char *name) {
             errort(tok, "undefined variable: %s", name);
         Type *ty = make_func_type(type_int, make_vector(), true, false);
         warnt(tok, "assume returning int: %s()", name);
-        return ast_funcdesg(ty, name);
+        return ast_funcdesg(ty, name, name);
     }
     if (v->ty->kind == KIND_FUNC)
-        return ast_funcdesg(v->ty, name);
+        return ast_funcdesg(v->ty, name, v->glabel);
     return v;
 }
 
@@ -2260,7 +2272,7 @@ static Vector *param_types(Vector *params) {
  * Function definition
  */
 
-static Node *read_func_body(Type *functype, char *fname, Vector *params) {
+static Node *read_func_body(Type *functype, char *fname, char *target_label, Vector *params) {
     localenv = make_map_parent(localenv);
     localvars = make_vector();
     current_func_type = functype;
@@ -2268,7 +2280,7 @@ static Node *read_func_body(Type *functype, char *fname, Vector *params) {
     map_put(localenv, "__func__", funcname);
     map_put(localenv, "__FUNCTION__", funcname);
     Node *body = read_compound_stmt();
-    Node *r = ast_func(functype, fname, params, body, localvars);
+    Node *r = ast_func(functype, fname, target_label, params, body, localvars);
     current_func_type = NULL;
     localenv = NULL;
     localvars = NULL;
@@ -2353,9 +2365,9 @@ static Node *read_funcdef() {
         functype->params = param_types(params);
     }
     functype->isstatic = (sclass == S_STATIC);
-    ast_gvar(functype, name);
+    Node *func = ast_gvar(functype, name);
     expect('{');
-    Node *r = read_func_body(functype, name, params);
+    Node *r = read_func_body(functype, name, func->glabel, params);
     backfill_labels();
     localenv = NULL;
     return r;
