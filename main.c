@@ -1,6 +1,7 @@
 // Copyright 2012 Rui Ueyama. Released under the MIT license.
 
 #include <libgen.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -29,6 +30,7 @@ static bool dumpasm;
 static bool dontlink;
 static Buffer *cppdefs;
 static Vector *tmpfiles = &EMPTY_VECTOR;
+char *module_id;
 #if defined(DEFAULT_TARGET_EX_ISA)
 char *target_arch = "ex-isa";
 #else
@@ -64,6 +66,7 @@ static void usage(int exitcode) {
             "  -fdump-stack      Print stacktrace\n"
             "  -fno-dump-source  Do not emit source code as assembly comment\n"
             "  -o filename       Output to the specified file\n"
+            "  --module-id id    Namespace compiler-generated private labels\n"
             "  -g                Do nothing at this moment\n"
             "  -Wall             Enable all warnings\n"
             "  -Werror           Make all warnings into errors\n"
@@ -75,6 +78,15 @@ static void usage(int exitcode) {
             "\n"
             "One of -a, -c, -E or -S must be specified.\n\n");
     exit(exitcode);
+}
+
+static void set_module_id(char *id) {
+    if (!id || !id[0] || !(isalpha((unsigned char)id[0]) || id[0] == '_'))
+        error("invalid module id: %s", id ? id : "(null)");
+    for (char *p = id + 1; *p; p++)
+        if (!(isalnum((unsigned char)*p) || *p == '_'))
+            error("invalid module id: %s", id);
+    module_id = id;
 }
 
 static void delete_temp_files() {
@@ -148,8 +160,16 @@ static void parse_m_arg(char *s) {
 
 static void parseopt(int argc, char **argv) {
     cppdefs = make_buffer();
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--module-id")) {
+            if (i + 1 >= argc)
+                error("--module-id requires an argument");
+            set_module_id(argv[i + 1]);
+            argv[i] = "-M";
+        }
+    }
     for (;;) {
-        int opt = getopt(argc, argv, "I:ED:O:SU:W:acd:f:gm:o:hw");
+        int opt = getopt(argc, argv, "I:ED:O:SU:W:acd:f:gm:M:o:hw");
         if (opt == -1)
             break;
         switch (opt) {
@@ -171,6 +191,7 @@ static void parseopt(int argc, char **argv) {
         case 'c': dontlink = true; break;
         case 'f': parse_f_arg(optarg); break;
         case 'm': parse_m_arg(optarg); break;
+        case 'M': set_module_id(optarg); break;
         case 'g': break;
         case 'o': outfile = optarg; break;
         case 'w': enable_warning = false; break;
