@@ -57,6 +57,55 @@ The compiler target option must match the backend selected at build time.
 Use `-m64` for the default build or `-mex-isa` for the EX_ISA build.
 EX_ISA builds emit EX_ISA assembly and do not invoke the GNU assembler.
 
+### Multi-source EX_ISA images
+
+`compile-ex-isa.sh` and `compile-ex-isa.bat` are source-level linker wrappers
+for Unix-like shells and Windows command prompt/PowerShell, respectively.
+They perform the same workflow:
+
+1. Compile every C source separately with the EX_ISA backend.
+2. Assign each source a deterministic module ID, such as `m0_main`.
+3. Merge the generated assembly in the order given on the command line.
+4. Invoke the EX_ISA assembler once to produce a flat instruction/data image.
+
+The entry source should be listed first because source order determines the
+instruction and data layout:
+
+    ./compile-ex-isa.sh -o program.txt main.c provider.c
+
+On Windows, use the batch wrapper with the same options:
+
+    compile-ex-isa.bat -o program.txt main.c provider.c
+
+Both wrappers support `-o`/`--output`, `--data-out`, `--mif`, `--mif-out`,
+`--data-mif-out`, `--asm-out`, and `--assembler`. `--asm-out` preserves the
+merged assembly for inspection. Without explicit output paths, the instruction
+output is based on the first source name. `--mif` requests instruction and data
+MIF output from the external assembler.
+
+Before running either wrapper, build the compiler with:
+
+    make TARGET=ex-isa 8cc
+
+The wrappers expect the resulting executable at the project root as `8cc` or
+`8cc.exe`. They invoke the separate EX_ISA assembler project; provide its
+executable with `--assembler FILE` or set `ASSEMBLER_EX_ISA`. When neither is
+specified, the wrappers look for `assembler-EX_ISA` or `assembler-EX_ISA.exe`
+beside the wrapper. The wrappers use temporary per-module assembly files and
+remove them after the build. Use `--asm-out` to copy the merged assembly to a
+persistent inspection path.
+
+This compiler-side linker is a flat image builder, not a conventional
+object-file linker. It does not produce relocations, archives, symbol files,
+or dynamic links. Public C functions and objects retain their C names, while
+compiler-generated private labels are module-qualified. Undefined references
+and duplicate public definitions are passed to the external assembler for
+diagnosis.
+
+The focused linker fixtures can be assembled with the shell wrapper using:
+
+    make TARGET=ex-isa ex-isa-link-test
+
 8cc comes with unit tests. To run the tests, give "test" as an argument:
 
     make test
