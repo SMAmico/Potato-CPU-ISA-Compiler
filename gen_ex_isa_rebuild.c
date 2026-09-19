@@ -78,21 +78,28 @@
       ANDI rA, rB, imm/label (rA = rB & immediate)
           -> pseudo-instruction: MOVI ASM_TMP, immediate; AND rA, rB, ASM_TMP
 
-      JMP offset/LABEL (PC = PC + soff12)
-          -> 1001 bbbb bbbb bbbb  (signed 12-bit PC-relative offset)
+      JMP LABEL/absolute_address (PC = full 16-bit target)
+          -> pseudo-instruction: MOVI/SHL/MOVI/OR target, then write target to PC
+      JMP +offset/-offset (PC = PC + soff12)
+          -> 1001 bbbb bbbb bbbb  (explicit signed 12-bit PC-relative offset)
       JMP rA (optional pseudo-form: PC = RF[rA])
           -> copies the register value into the PC register
       JNZ rA, rB, soff4 (PC = RF[rB] + soff4 if RF[rA] != 0)
           -> 1010 raaa rbbb bbbb
-      JLT rA, rB, offset (PC = PC + offset if rA < rB)
-          -> 1011 raaa rbbb bbbb    (4-bit signed offset relative to next instr)
+      JNZ rA, LABEL/absolute_address (conditional full 16-bit target)
+          -> pseudo-instruction: load the target address, then native JNZ with offset zero
+      JLT rA, rB, +offset/-offset (PC = PC + offset if rA < rB)
+          -> 1011 raaa rbbb bbbb    (explicit signed 4-bit offset)
+      JLT rA, rB, LABEL/absolute_address (conditional full 16-bit target)
+          -> pseudo-instruction: CMP/SETGE guard, then full-address JMP
       JZ rA, label (branch if rA == 0)
       JEQ rA, rB_or_imm, label (branch if rA == rB_or_imm)
       JNE rA, rB_or_imm, label (branch if rA != rB_or_imm)
       JLE rA, rB_or_imm, label (branch if signed rA <= rB_or_imm)
       JGT rA, rB_or_imm, label (branch if signed rA > rB_or_imm)
       JGE rA, rB_or_imm, label (branch if signed rA >= rB_or_imm)
-          -> pseudo-instructions: CMP, SETcc, and JNZ via ASM_TMP; immediates are signed 16-bit values
+             -> pseudo-instructions: CMP/SETcc guard, then a full-address jump;
+                 immediates are signed 16-bit values
 
       CMP rA, rB (capture Z, N, and V from signed rA - rB)
           -> 1110 raaa rbbb 0000
@@ -121,10 +128,10 @@
           -> 1011 raaa rbbb rccc
 
 
-    The assembler supports labels for PC-relative control flow and computes relative offsets
-    as: offset = target_address - (current_address + 1).
-    - JMP label uses a signed 12-bit offset (-2048..+2047).
-    - JLT label uses a signed 4-bit offset (-8..+7).
+    Jump labels and bare numeric targets are full 16-bit absolute instruction addresses.
+    Explicit +offset/-offset operands select compact PC-relative encodings:
+    - JMP uses a signed 12-bit offset (-2048..+2047).
+    - JLT and low-level JNZ use signed 4-bit offsets (-8..+7).
 */
 
 
