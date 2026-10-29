@@ -8,6 +8,7 @@ if "%~1"=="" goto :usage_error
 
 set "output="
 set "asm_output="
+set "stop_before_assembler="
 set "assembler="
 set "assembler_args="
 set /a source_count=0
@@ -25,6 +26,11 @@ if /I "%~1"=="--mif" (
     goto :parse_args
 )
 if /I "%~1"=="--asm-out" goto :asm_output_option
+if /I "%~1"=="--stop-before-assembler" (
+    set "stop_before_assembler=1"
+    shift
+    goto :parse_args
+)
 if /I "%~1"=="--assembler" goto :assembler_option
 if "%~1"=="--" (
     set "collect_mode=1"
@@ -101,13 +107,16 @@ if !source_count! EQU 0 (
 
 if not defined output for %%I in ("!source[0]!") do set "output=%%~dpnI.txt"
 for %%I in ("!output!") do set "output=%%~fI"
+if defined stop_before_assembler if not defined asm_output (
+    for %%I in ("!output!") do set "asm_output=%%~dpnI.s"
+)
 if defined asm_output for %%I in ("!asm_output!") do set "asm_output=%%~fI"
 
 set "project_dir=!script_dir!"
 if not defined assembler if defined ASSEMBLER_EX_ISA set "assembler=%ASSEMBLER_EX_ISA%"
 if not defined assembler if exist "!project_dir!\assembler-EX_ISA.exe" set "assembler=!project_dir!\assembler-EX_ISA.exe"
 if not defined assembler if exist "!project_dir!\assembler-EX_ISA" set "assembler=!project_dir!\assembler-EX_ISA"
-if not defined assembler (
+if not defined stop_before_assembler if not defined assembler (
     set "error_message=EX-ISA assembler not found; use --assembler FILE or set ASSEMBLER_EX_ISA"
     goto :fail
 )
@@ -151,14 +160,45 @@ for /L %%N in (0,1,!last_source!) do (
 )
 popd
 
-if defined asm_output copy /Y "!merged!" "!asm_output!" >nul
+findstr /X /C:"main:" "!merged!" >nul
 if errorlevel 1 (
-    set "error_message=Could not write assembly output: !asm_output!"
+    set "missing_main=1"
+    set "startup=hlt"
+) else (
+    set "startup=jmp main"
+)
+set "startup_assembly=!tmpdir!\startup.s"
+>"!startup_assembly!" echo .text
+>>"!startup_assembly!" echo !startup!
+type "!merged!" >>"!startup_assembly!"
+move /Y "!startup_assembly!" "!merged!" >nul
+if errorlevel 1 (
+    set "error_message=Could not add program entry instruction"
     goto :fail
+)
+
+if defined asm_output (
+    copy /Y "!merged!" "!asm_output!" >nul
+    if errorlevel 1 (
+        set "error_message=Could not write assembly output: !asm_output!"
+        goto :fail
+    )
+)
+if defined stop_before_assembler (
+    echo Stopped before assembler; raw assembly written to !asm_output!
+    if defined missing_main (
+        set "error_message=undefined reference to 'main'"
+        goto :fail
+    )
+    goto :cleanup_success
 )
 "!assembler!" "!merged!" "!output!" !assembler_args!
 if errorlevel 1 (
     set "error_message=EX-ISA assembler failed"
+    goto :fail
+)
+if defined missing_main (
+    set "error_message=undefined reference to 'main'"
     goto :fail
 )
 echo Linked !source_count! EX-ISA source module^(s^) into !output!
@@ -178,13 +218,14 @@ echo   --data-out FILE         data output
 echo   --mif                   also write instruction and data MIF files
 echo   --mif-out FILE          instruction MIF output
 echo   --data-mif-out FILE     data MIF output
-echo   --asm-out FILE          keep the merged assembly source
+echo   --asm-out FILE          write merged raw assembly to FILE
+echo   --stop-before-assembler stop after compiler output is merged
 echo   --assembler FILE        EX-ISA assembler executable
 echo   -h, --help              show this help
 exit /b 0
 
 :fail
-echo !error_message! 1>&2
+1>&2 echo(!error_message!
 if defined tmpdir rd /s /q "!tmpdir!" >nul 2>&1
 exit /b 1
 

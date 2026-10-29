@@ -100,6 +100,9 @@ ex-isa-link-test:
 		-o test/ex_isa_link_static.txt \
 		test/ex_isa_link_static_a.c test/ex_isa_link_static_b.c
 
+ex-isa-entry-test:
+	sh ./test/ex-isa-tests/test_entry_wrapper.sh
+
 fulltest: testtest
 	$(MAKE) stage1
 	$(MAKE) CC=./$(BUILD_DIR)/stage1 ECC=./$(BUILD_DIR)/stage1 CFLAGS= test
@@ -116,4 +119,4 @@ cleanobj:
 
 all: 8cc
 
-.PHONY: clean cleanobj test runtests fulltest self all
+.PHONY: clean cleanobj test runtests fulltest self all ex-isa-entry-test

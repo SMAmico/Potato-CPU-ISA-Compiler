@@ -2,7 +2,7 @@
 #define MAJOR_TEST_H
 
 #include <stddef.h>
-//#include "testmain.c"
+#include "./testmain_light.c"
 
 size_t strlen(const char *);
 

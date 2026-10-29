@@ -1,5 +1,3 @@
-typedef unsigned long size_t;
-
 size_t strlen(const char *text) {
     size_t length = 0;
     while (text[length])

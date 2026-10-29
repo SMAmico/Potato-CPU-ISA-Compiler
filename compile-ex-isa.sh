@@ -10,6 +10,7 @@ usage() {
     printf '  --mif-out FILE          instruction MIF output\n' >&2
     printf '  --data-mif-out FILE     data MIF output\n' >&2
     printf '  --asm-out FILE          keep the merged assembly source\n' >&2
+    printf '  --stop-before-assembler stop after compiler output is merged\n' >&2
     printf '  --assembler FILE        EX-ISA assembler executable\n' >&2
 }
 
@@ -22,6 +23,7 @@ sources=()
 assembler_args=()
 output=
 asm_output=
+stop_before_assembler=0
 assembler=
 
 while [ "$#" -gt 0 ]; do
@@ -44,6 +46,10 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || { printf '%s requires a value\n' "$1" >&2; exit 1; }
             asm_output=$2
             shift 2
+            ;;
+        --stop-before-assembler)
+            stop_before_assembler=1
+            shift
             ;;
         --assembler)
             [ "$#" -ge 2 ] || { printf '%s requires a value\n' "$1" >&2; exit 1; }
@@ -85,6 +91,12 @@ if [ -z "$output" ]; then
     output=${sources[0]%.c}.txt
 fi
 output=$(realpath -m "$output")
+if [ "$stop_before_assembler" -eq 1 ] && [ -z "$asm_output" ]; then
+    asm_output=${output%.txt}.s
+fi
+if [ -n "$asm_output" ]; then
+    asm_output=$(realpath -m "$asm_output")
+fi
 
 if [ -z "$assembler" ]; then
     assembler=${ASSEMBLER_EX_ISA:-}
@@ -99,7 +111,7 @@ if [ -z "$assembler" ]; then
         fi
     done
 fi
-if [ -z "$assembler" ]; then
+if [ "$stop_before_assembler" -eq 0 ] && [ -z "$assembler" ]; then
     printf 'EX-ISA assembler not found; use --assembler FILE or ASSEMBLER_EX_ISA\n' >&2
     exit 1
 fi
@@ -133,10 +145,36 @@ for i in "${!sources[@]}"; do
     printf '\n# End EX-ISA module %s\n' "$module_id" >> "$merged"
 done
 
+if grep -Eq '^[[:space:]]*main:[[:space:]]*(#.*|;.*)?$' "$merged"; then
+    missing_main=0
+    startup='jmp main'
+else
+    missing_main=1
+    startup=hlt
+fi
+startup_assembly=$tmpdir/startup.s
+{
+    printf '.text\n%s\n' "$startup"
+    cat "$merged"
+} > "$startup_assembly"
+mv "$startup_assembly" "$merged"
+
 if [ -n "$asm_output" ]; then
-    asm_output=$(realpath -m "$asm_output")
     cp "$merged" "$asm_output"
+fi
+
+if [ "$stop_before_assembler" -eq 1 ]; then
+    printf 'Stopped before assembler; raw assembly written to %s\n' "$asm_output"
+    if [ "$missing_main" -eq 1 ]; then
+        printf "undefined reference to 'main'\n" >&2
+        exit 1
+    fi
+    exit 0
 fi
 
 "$assembler" "$merged" "$output" "${assembler_args[@]}"
 printf 'Linked %d EX-ISA source module(s) into %s\n' "${#sources[@]}" "$output"
+if [ "$missing_main" -eq 1 ]; then
+    printf "undefined reference to 'main'\n" >&2
+    exit 1
+fi

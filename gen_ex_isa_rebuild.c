@@ -1,8 +1,8 @@
 // EX_ISA backend for 8cc compiler
 // Target: 4-bit opcodes, 16 registers, 16-bit words, 256-byte address space
 // Build compiler: make TARGET=ex-isa
-// Compile test: ./8cc -mex-isa -S -o test_ex_isa_codegen.s test_ex_isa_codegen.c
-// Width test: ./8cc -mex-isa -S -o test_ex_isa_widths.s test_ex_isa_widths.c
+// Compile test: ./8cc -mex-isa -S -o artifacts/codegen/test_ex_isa_codegen.s test_ex_isa_codegen.c
+// Width test: ./8cc -mex-isa -S -o artifacts/widths/test_ex_isa_widths.s test_ex_isa_widths.c
 //this project uses the assembler below. all assembly instructions 
 //should be converted into this format.
 
@@ -165,7 +165,7 @@
 #define tmp 13      //temp register for extended c translation
 #define sp 12       //stack pointer register
 #define frame_pointer 11 //frame pointer register
-#define gb 10       //global base register
+#define gb 10       //link register; preserved at each call site
 #define zero 0
 
 //x86 registers hardcoded to match EX_ISA registers
@@ -208,6 +208,7 @@ static Vector functions_storage;
 static Vector *functions = &functions_storage;
 //location of stack
 static int stackpos;
+static bool emitting_main;
 //number of global variables
 static int numgp;
 //number of floating point variables
@@ -471,10 +472,8 @@ static void emit_normalize_int(Type *ty) {
     if (!is_inttype(ty))
         return;
 
-    if (ty->size > EX_ISA_REG_BYTES) {
-        emit("andi %d, %d, %d", rax, rax, 0xFFFF);
+    if (ty->size >= EX_ISA_REG_BYTES)
         return;
-    }
 
     if (ty->size < EX_ISA_REG_BYTES) {
         int mask = (ty->kind == KIND_BOOL) ? 1 : 0xFF;
@@ -1169,13 +1168,16 @@ we just have to manually pop the stack and return.
 /// @brief  emit: return call
 static void emit_ret() {
     SAVE;
-    // The existing frame convention stores caller FP at FP[0] and the
-    // return PC at FP[1]. Restore the frame and jump through that PC.
+    if (emitting_main) {
+        emit("halt");
+        return;
+    }
+    // The callee's incoming link is at FP[1], after the saved FP at FP[0].
     emit_asm(ins_mov, sp, frame_pointer);
     emit_asm(ins_ldr, frame_pointer, sp, 0);
-    emit_asm(ins_ldr, tmp, sp, 1);
+    emit_asm(ins_ldr, gb, sp, 1);
     emit_asm(ins_addi, sp, sp, 2);
-    emit_asm(ins_jmp, tmp);
+    emit_asm(ins_jmp, gb);
 }
 
 /// @brief potato | emit: binop comparison (LT LE EQ NE)
@@ -1685,7 +1687,7 @@ static void emit_builtin_return_address(Node *node) {
     emit("subi %d, %d, %d", rax, rax, 1);
     emit_jmp(loop);
     emit_label(end);
-    //The return address follows the saved frame pointer (word-addressed).
+    //The incoming link follows the saved frame pointer (word-addressed).
     emit("ldr %d, %d, %d", rax, tmp, 1);
     pop(tmp);
 }
@@ -1743,7 +1745,7 @@ static void emit_builtin_va_start(Node *node) {
 The ISA does not have as many usable registers as x86 does, so
 function arguments will have to change. there are 6 registers that can be
 used for GP-length arguments, combined with 2 registers for FP-length arguments.
-the caller will save rax, rcx, rdx, xmm0, xmm1, and tmp before jumping.
+    the caller saves argument registers and the link register before jumping.
 */
 
 /// @brief potato | emit the builtin parameters 
@@ -1947,20 +1949,24 @@ static void emit_func_call(Node *node) {
     if (ftype->hasva)
         emit("movi %d %d", eax, vec_len(floats));
 
+    char *return_label = make_label();
+    push(gb);
+    emit_asm(ins_mov, gb, zero);
+    emit("movi %d, %s", gb, return_label);
+
     //if the function is a function pointer, jump to the function
     if (isptr) {
-        push(pc);
-        stackpos -= 1;
         emit("jmp %d", tmp);
     }
     else {
         //if the function is not a pointer,
         //we jump to the function name instead.
-        push(pc);
-        stackpos -= 1;
         emit("jmp %s", node->target_label);
-        maybe_booleanize_retval(node->ty);
     }
+    emit_label(return_label);
+    pop(gb);
+    if (!isptr)
+        maybe_booleanize_retval(node->ty);
     if (restsize > 0) {
         //if there are arguments on the stack,
         //we remove them from the stack and restore the
@@ -1979,7 +1985,7 @@ static void emit_func_call(Node *node) {
     restore_arg_regs(vec_len(ints), vec_len(floats));
     emit_normalize_int(node->ty);
     //and ensure the stack has returned to its original position.
-    fprintf(stderr, "stackpos: %d, opos: %d\n", stackpos, opos);
+    //fprintf(stderr, "stackpos: %d, opos: %d\n", stackpos, opos);
     assert(opos == stackpos);
 }
 
@@ -2045,6 +2051,8 @@ static void emit_return(Node *node) {
         emit_expr(node->retval);
         maybe_booleanize_retval(node->retval->ty);
         emit_normalize_int(node->retval->ty);
+    } else if (emitting_main) {
+        emit("movi %d, %d", rax, 0);
     }
     emit_ret();
 }
@@ -2494,7 +2502,7 @@ static int emit_regsave_area() {
 static void push_func_params(Vector *params, int off) {
     int ireg = 0;
     int xreg = 0;
-    int arg = 2;
+    int arg = 3; // Saved FP, incoming link, and caller's old link precede overflow args.
     for (int i = 0; i < vec_len(params); i++) {
         Node *v = vec_get(params, i);
         if (v->ty->kind == KIND_STRUCT) {
@@ -2553,9 +2561,9 @@ static void emit_func_prologue(Node *func) {
         emit_noindent(".global %s", func->target_label);
     emit_noindent("%s:", func->target_label);
     emit("nop");
+    push(gb); // Preserve this function's incoming continuation for return/frame walking.
     push(rbp);
-    //emit("mov #rsp, #rbp");
-    emit("str %d, %d, %d", rsp, rbp, 0);
+    emit("mov %d, %d", rbp, rsp);
     int off = 0;
     if (func->ty->hasva) {
         set_reg_nums(func->params);
@@ -2584,11 +2592,15 @@ static void emit_func_prologue(Node *func) {
 /// @param v 
 void emit_toplevel(Node *v) {
     stackpos = 1;
+    emitting_main = false;
     if (v->kind == AST_FUNC) {
+        emitting_main = !strcmp(v->target_label, "main");
         emit_func_prologue(v);
         emit_expr(v->body);
+        if (emitting_main)
+            emit("movi %d, %d", rax, 0);
         emit_ret();
-        emit("halt");
+        emitting_main = false;
     } else if (v->kind == AST_DECL) {
         emit_global_var(v);
     } else {

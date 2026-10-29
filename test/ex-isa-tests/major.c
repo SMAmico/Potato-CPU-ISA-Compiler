@@ -198,7 +198,7 @@ static void test_qualifiers_and_short_circuit(void) {
     expect(5, observed);
 }
 
-void testmain(void) {
+void main(void) {
     print("major language features");
     test_scalars_and_expressions();
     test_types_and_conversions();

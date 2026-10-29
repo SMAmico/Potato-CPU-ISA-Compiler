@@ -68,8 +68,11 @@ They perform the same workflow:
 3. Merge the generated assembly in the order given on the command line.
 4. Invoke the EX_ISA assembler once to produce a flat instruction/data image.
 
-The entry source should be listed first because source order determines the
-instruction and data layout:
+The wrappers place a startup transfer at address zero when the merged program
+defines `main`; the source containing `main` does not need to be listed first.
+Source order still determines instruction and data layout. If no `main` is
+defined, the wrappers emit `hlt` at address zero, still assemble the remaining
+code, report `undefined reference to 'main'`, and return a nonzero status:
 
     ./compile-ex-isa.sh -o program.txt main.c provider.c
 
@@ -78,8 +81,10 @@ On Windows, use the batch wrapper with the same options:
     compile-ex-isa.bat -o program.txt main.c provider.c
 
 Both wrappers support `-o`/`--output`, `--data-out`, `--mif`, `--mif-out`,
-`--data-mif-out`, `--asm-out`, and `--assembler`. `--asm-out` preserves the
-merged assembly for inspection. Without explicit output paths, the instruction
+`--data-mif-out`, `--asm-out`, `--stop-before-assembler`, and `--assembler`.
+`--asm-out` preserves the merged assembly for inspection, while
+`--stop-before-assembler` writes it beside the instruction output by default
+and skips assembly. Without explicit output paths, the instruction
 output is based on the first source name. `--mif` requests instruction and data
 MIF output from the external assembler.
 
@@ -105,6 +110,10 @@ diagnosis.
 The focused linker fixtures can be assembled with the shell wrapper using:
 
     make TARGET=ex-isa ex-isa-link-test
+
+The entry-point behavior can be checked with:
+
+    make TARGET=ex-isa ex-isa-entry-test
 
 8cc comes with unit tests. To run the tests, give "test" as an argument:
 
